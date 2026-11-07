@@ -19,3 +19,7 @@ local.properties
 /app/src/androidTest/assets/
 /llama/third_party/
 /llama/build/
+
+/keystore.properties
+*.jks
+*.keystore

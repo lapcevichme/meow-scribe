@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -24,12 +26,31 @@ android {
 
     androidResources { noCompress += listOf("onnx", "gguf", "bin", "txt") }
 
+    // Релизный ключ берём из android/keystore.properties (в git его нет).
+    // Без него релиз подписывается отладочным ключом, чтобы APK можно было установить.
+    val keystoreProps = rootProject.file("keystore.properties")
+        .takeIf { it.exists() }
+        ?.let { file -> Properties().apply { file.inputStream().use(::load) } }
+    signingConfigs {
+        if (keystoreProps != null) {
+            create("release") {
+                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            // Только полная оптимизация: с packageScope R8 переименовывал классы kotlin.*,
+            // а наш код, оставшийся вне scope, наследовался от них и падал с IllegalAccessError.
             optimization {
                 enable = true
-                packageScope = setOf("androidx.**", "kotlin.**", "kotlinx.**")
             }
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
     compileOptions {
