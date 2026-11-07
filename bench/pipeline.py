@@ -88,6 +88,11 @@ class Config:
     pad: float = 0.15
     split_gap: float = 3.0
     sent_gap: float = 0.4           # пауза после конца предложения → новая реплика
+    smooth_run: float = 1.0         # куски другого спикера короче — внутри предложения отдаются основному (0 = выкл)
+    bc_max: float = 1.5             # поддакивания короче — отдельными репликами (0 = выкл)
+    sent_min: float = 1.5           # предложения от этой длины сверяются по голосу (0 = выкл)
+    sent_margin: float = 0.1        # перевес косинуса, с которого предложение переходит к другому спикеру
+    sent_major: float = 0.1         # переходят только к спикерам с такой долей речи
     merge: str = "words"            # words | segments
     recluster_sim: float = 0.0      # 0 = выкл.; склейка спикеров с косинусом эмбеддингов > порога
     min_spk_sec: float = 6.0        # спикеры с речью меньше (но не больше 15% всей речи) — к самому похожему
@@ -226,14 +231,18 @@ def diarize(pcm, cfg: Config):
 _EXT = {}
 
 
-def speaker_embeddings(pcm, segs, cfg, max_sec=30.0):
-    """Один эмбеддинг на спикера: склейка его самых длинных сегментов (до max_sec)."""
+def _extractor(cfg):
     path = (str(ASSETS / "diarization/embedding.onnx") if cfg.emb == "prod"
             else str(CACHE / "emb" / f"{EMB[cfg.emb]}.onnx") if cfg.emb in EMB else cfg.emb)
     if path not in _EXT:
         _EXT[path] = sherpa_onnx.SpeakerEmbeddingExtractor(
             sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=path, num_threads=cfg.threads))
-    ext = _EXT[path]
+    return _EXT[path]
+
+
+def speaker_embeddings(pcm, segs, cfg, max_sec=30.0):
+    """Один эмбеддинг на спикера: склейка его самых длинных сегментов (до max_sec)."""
+    ext = _extractor(cfg)
     embs, dur = {}, {}
     for k in sorted({x[2] for x in segs}):
         mine = sorted([x for x in segs if x[2] == k], key=lambda x: x[0] - x[1])
@@ -313,7 +322,150 @@ def assign_speakers(words: list[Word], segs) -> None:
         w.spk = best if best is not None else 0
 
 
-def build_utterances(words: list[Word], split_gap: float, sent_gap: float = 1e9) -> list[dict]:
+def _ends_sentence(text: str) -> bool:
+    return text.rstrip("»\"')").endswith((".", "!", "?", "…", "—"))
+
+
+# Строгие реакции-поддакивания. «ну», «вот», «так», «а» сюда не входят: в русском это обычные
+# служебные слова посреди фразы, и на подкасте их перенос рвал реплики. 1:1 с WordMerger.BACKCHANNELS.
+BACKCHANNELS = {
+    "да", "ага", "угу", "мгм", "ясно", "понятно", "конечно", "ок", "окей", "хорошо", "точно", "верно",
+    "именно", "согласен", "согласна", "ого", "вау", "ой", "хм", "мм", "ммм",
+    "yeah", "yes", "yep", "yup", "mhm", "mmhmm", "mmhm", "uhhuh", "okay", "ok", "right", "sure", "exactly",
+    "oh", "wow", "hmm", "mmm", "alright", "true", "cool",
+}
+_REPEATED = ("да", "ага", "угу", "yeah", "mm", "okay")
+
+
+def is_backchannel(text: str) -> bool:
+    """Повтор междометия («да-да-да») или междометие из списка со знаком после («Да.», «угу,»)."""
+    key = "".join(ch for ch in text.lower().replace("ё", "е") if ch.isalnum())
+    if not key:
+        return False
+    if any(len(key) >= 2 * len(b) and len(key) % len(b) == 0 and key == b * (len(key) // len(b)) for b in _REPEATED):
+        return True
+    return key in BACKCHANNELS and text.rstrip("»\"')").endswith((".", "!", "?", "…", ","))
+
+
+def assign_backchannels(words: list[Word], segs) -> None:
+    """Реакцию, наполовину накрытую сегментами двух разных спикеров, — спикеру с самым коротким сегментом.
+    1:1 с WordMerger.assignBackchannels. Вызывать после assign_speakers."""
+    for w in words:
+        if not is_backchannel(w.text):
+            continue
+        half = max(w.end - w.start, 1e-3) * 0.5
+        cover = [x for x in segs if min(w.end, x[1]) - max(w.start, x[0]) >= half]
+        if len({k for _, _, k in cover}) >= 2:
+            w.spk = min(cover, key=lambda x: x[1] - x[0])[2]
+
+
+def sentences(words: list[Word], pause_gap: float = 1.0) -> list[tuple[int, int]]:
+    """[lo, hi) предложений: .!?… или «—» в конце, «—» в начале следующего слова, пауза > pause_gap."""
+    out, lo = [], 0
+    for i, w in enumerate(words):
+        if i == len(words) - 1 or _ends_sentence(w.text) or words[i + 1].text.startswith("—") \
+                or words[i + 1].start - w.end > pause_gap:
+            out.append((lo, i + 1))
+            lo = i + 1
+    return out
+
+
+def main_speaker(words: list[Word], lo: int, hi: int) -> int:
+    talk: dict[int, float] = {}
+    for w in words[lo:hi]:
+        talk[w.spk] = talk.get(w.spk, 0.0) + (w.end - w.start)
+    return max(talk, key=talk.get)
+
+
+def smooth_speakers(words: list[Word], max_run: float, pause_gap: float = 1.0) -> None:
+    """Сглаживание меток внутри предложения (поддакивания рвут чужую фразу). 1:1 с WordMerger.smoothSpeakers.
+
+    Куски не-основного спикера короче max_run с отдаются тому, кто говорит в предложении дольше всех.
+    max_run <= 0 — выкл.
+    """
+    if max_run <= 0 or len(words) < 2:
+        return
+    for lo, hi in sentences(words, pause_gap):
+        if hi - lo < 2 or len({w.spk for w in words[lo:hi]}) < 2:
+            continue
+        main = main_speaker(words, lo, hi)
+        i = lo
+        while i < hi:
+            j = i
+            while j + 1 < hi and words[j + 1].spk == words[i].spk:
+                j += 1
+            if words[i].spk != main and words[j].end - words[i].start < max_run:
+                for k in range(i, j + 1):
+                    words[k].spk = main
+            i = j + 1
+
+
+def extract_backchannels(words: list[Word], max_sec: float):
+    """Кусок другого спикера внутри предложения из 1–2 реакций короче max_sec → отдельная реплика.
+    Возвращает (основной поток, вынутые куски). 1:1 с WordMerger.extractBackchannels."""
+    if max_sec <= 0:
+        return words, []
+    drop, extra = set(), []
+    for lo, hi in sentences(words):
+        if hi - lo < 2:
+            continue
+        main = main_speaker(words, lo, hi)
+        i = lo
+        while i < hi:
+            j = i
+            while j + 1 < hi and words[j + 1].spk == words[i].spk:
+                j += 1
+            if words[i].spk != main and j - i < 2 and words[j].end - words[i].start < max_sec \
+                    and all(is_backchannel(words[k].text) for k in range(i, j + 1)):
+                drop.update(range(i, j + 1))
+                extra.append(words[i:j + 1])
+            i = j + 1
+    return [w for n, w in enumerate(words) if n not in drop], extra
+
+
+def relabel_sentences(pcm, words: list[Word], segs, cfg: Config) -> None:
+    """Предложение целиком — спикеру с ближайшим по CAM++ центроидом, если перевес ≥ sent_margin.
+    На быстром диалоге диаризация склеивает реплики разных людей в один сегмент. 1:1 с SentenceRelabeler."""
+    if cfg.sent_min <= 0:
+        return
+    dur: dict[int, float] = {}
+    for s, e, k in segs:
+        dur[k] = dur.get(k, 0.0) + e - s
+    if len(dur) < 2:
+        return
+    ranges = [(lo, hi) for lo, hi in sentences(words) if words[hi - 1].end - words[lo].start >= cfg.sent_min]
+    if not ranges:
+        return
+    cen, _ = speaker_embeddings(pcm, segs, cfg)
+    if len(cen) < 2:
+        return
+    total = sum(dur.values())
+    major = sorted(k for k in cen if dur.get(k, 0.0) / total >= cfg.sent_major)
+    if not major:
+        return
+    ext = _extractor(cfg)
+    new = []
+    for lo, hi in ranges:
+        a, b = int(words[lo].start * SR), int(words[hi - 1].end * SR)
+        st = ext.create_stream()
+        st.accept_waveform(SR, pcm[max(0, a):max(0, b)])
+        st.input_finished()
+        if not ext.is_ready(st):
+            continue
+        v = np.array(ext.compute(st))
+        v /= np.linalg.norm(v) + 1e-9
+        cur = main_speaker(words, lo, hi)
+        best = max(major, key=lambda k: float(cen[k] @ v))
+        cur_sim = float(cen[cur] @ v) if cur in cen else -1.0
+        if best != cur and float(cen[best] @ v) - cur_sim >= cfg.sent_margin:
+            new.append((lo, hi, best))
+    for lo, hi, k in new:
+        for w in words[lo:hi]:
+            w.spk = k
+
+
+def build_utterances(words: list[Word], split_gap: float, sent_gap: float = 1e9, extra=()) -> list[dict]:
+    """extra — реплики-поддакивания из extract_backchannels, встают по времени начала. 1:1 с WordMerger."""
     utts, cur = [], []
     for w in words:
         gap = w.start - cur[-1].end if cur else 0
@@ -324,6 +476,9 @@ def build_utterances(words: list[Word], split_gap: float, sent_gap: float = 1e9)
         cur.append(w)
     if cur:
         utts.append(cur)
+    if extra:
+        utts += [list(x) for x in extra if x]
+        utts.sort(key=lambda u: u[0].start)
     names: dict[int, str] = {}
     out = []
     for u in utts:
@@ -402,6 +557,7 @@ def run(pcm: np.ndarray, cfg: Config) -> Result:
 
     t0 = time.perf_counter()
     rec = get_rec(cfg.asr if lang == "ru" else cfg.asr_en, cfg.threads)
+    extra = []
     if cfg.merge == "segments":
         merged = merge_segments(segs)
         pad = int(cfg.pad * SR)
@@ -419,6 +575,10 @@ def run(pcm: np.ndarray, cfg: Config) -> Result:
         t["asr"] = time.perf_counter() - t0
         t0 = time.perf_counter()
         assign_speakers(words, segs)
-    utts = build_utterances(words, cfg.split_gap, cfg.sent_gap)
+        assign_backchannels(words, segs)
+        relabel_sentences(pcm, words, segs, cfg)
+        words, extra = extract_backchannels(words, cfg.bc_max)
+        smooth_speakers(words, cfg.smooth_run)
+    utts = build_utterances(words, cfg.split_gap, cfg.sent_gap, extra)
     t["merge"] = time.perf_counter() - t0
     return Result(utts, t, words, segs, lang)

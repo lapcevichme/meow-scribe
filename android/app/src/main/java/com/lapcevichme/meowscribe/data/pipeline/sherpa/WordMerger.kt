@@ -15,7 +15,7 @@ internal data class SpeakerSegment(val start: Float, val end: Float, val speaker
 
 /**
  * Склейка ASR и диаризации. Логика 1:1 с bench/pipeline.py (tokens_to_words, assign_speakers,
- * build_utterances) — менять синхронно.
+ * assign_backchannels, smooth_speakers, extract_backchannels, build_utterances) — менять синхронно.
  */
 internal object WordMerger {
 
@@ -84,11 +84,142 @@ internal object WordMerger {
         }
     }
 
+    // Строгие реакции-поддакивания. «ну», «вот», «так», «а» сюда не входят: в русском это обычные
+    // служебные слова посреди фразы, и на подкасте их перенос рвал реплики.
+    private val BACKCHANNELS = setOf(
+        "да", "ага", "угу", "мгм", "ясно", "понятно", "конечно", "ок", "окей", "хорошо", "точно", "верно",
+        "именно", "согласен", "согласна", "ого", "вау", "ой", "хм", "мм", "ммм",
+        "yeah", "yes", "yep", "yup", "mhm", "mmhmm", "mmhm", "uhhuh", "okay", "ok", "right", "sure", "exactly",
+        "oh", "wow", "hmm", "mmm", "alright", "true", "cool",
+    )
+    private val REPEATED = listOf("да", "ага", "угу", "yeah", "mm", "okay")
+
+    /**
+     * Слово — реакция слушателя: повтор междометия («да-да-да», «угу-угу») или междометие из списка со
+     * знаком препинания после («Да.», «угу,», «Yeah.»). Голое «да» посреди фразы — обычное слово.
+     */
+    fun isBackchannel(text: String): Boolean {
+        val key = text.lowercase().replace('ё', 'е').filter { it.isLetterOrDigit() }
+        if (key.isEmpty()) return false
+        if (REPEATED.any { b -> key.length >= 2 * b.length && key.length % b.length == 0 && key == b.repeat(key.length / b.length) }) {
+            return true
+        }
+        return key in BACKCHANNELS && text.trimEnd('»', '"', '\'', ')').let {
+            it.endsWith('.') || it.endsWith('!') || it.endsWith('?') || it.endsWith('…') || it.endsWith(',')
+        }
+    }
+
+    /**
+     * Поддакивание поверх чужой речи диаризация часто видит (сегменты двух спикеров перекрываются), но по
+     * максимальному перекрытию слово достаётся тому, кто говорит дольше. Если реакцию ([isBackchannel])
+     * хотя бы наполовину накрывают сегменты двух разных спикеров, отдаём её спикеру с самым коротким
+     * сегментом: перебивающий говорит коротко. Вызывать после [assignSpeakers].
+     */
+    fun assignBackchannels(words: List<TimedWord>, segments: List<SpeakerSegment>): List<TimedWord> = words.map { w ->
+        if (!isBackchannel(w.text)) return@map w
+        val half = maxOf(w.end - w.start, 1e-3f) * 0.5f
+        val cover = segments.filter { minOf(w.end, it.end) - maxOf(w.start, it.start) >= half }
+        if (cover.distinctBy { it.speaker }.size < 2) w else w.copy(speaker = cover.minBy { it.end - it.start }.speaker)
+    }
+
+    /** Предложения: конец на .!?… или «—», следующее слово начинается с «—», пауза дольше [pauseGap] с. */
+    fun sentenceRanges(words: List<TimedWord>, pauseGap: Float = 1f): List<IntRange> {
+        val out = ArrayList<IntRange>()
+        var from = 0
+        for (i in words.indices) {
+            if (i == words.lastIndex || endsSentence(words[i].text) || words[i + 1].text.startsWith('—') ||
+                words[i + 1].start - words[i].end > pauseGap
+            ) {
+                out += from..i
+                from = i + 1
+            }
+        }
+        return out
+    }
+
+    /** Спикер, который в [range] говорит дольше всех (при равенстве — кто раньше начал). */
+    fun mainSpeaker(words: List<TimedWord>, range: IntRange): Int {
+        val talk = LinkedHashMap<Int, Float>()
+        for (i in range) talk.merge(words[i].speaker, words[i].end - words[i].start, Float::plus)
+        return talk.maxBy { it.value }.key
+    }
+
+    /**
+     * Поддакивания — отдельными репликами. Кусок другого спикера внутри предложения из 1–2 реакций
+     * ([isBackchannel]) короче [maxSec] с вынимаем из потока слов: основная реплика не рвётся, а «угу»
+     * становится своей репликой поверх неё (перекрытия реплик организаторы разрешили).
+     * @return основной поток слов и вынутые куски. [maxSec] ≤ 0 — выключено.
+     */
+    fun extractBackchannels(words: List<TimedWord>, maxSec: Float): Pair<List<TimedWord>, List<List<TimedWord>>> {
+        if (maxSec <= 0f) return words to emptyList()
+        val drop = BooleanArray(words.size)
+        val extra = ArrayList<List<TimedWord>>()
+        for (r in sentenceRanges(words)) {
+            if (r.last == r.first) continue
+            val main = mainSpeaker(words, r)
+            var i = r.first
+            while (i <= r.last) {
+                var j = i
+                while (j < r.last && words[j + 1].speaker == words[i].speaker) j++
+                if (words[i].speaker != main && j - i < 2 && words[j].end - words[i].start < maxSec &&
+                    (i..j).all { isBackchannel(words[it].text) }
+                ) {
+                    for (k in i..j) drop[k] = true
+                    extra += words.subList(i, j + 1).toList()
+                }
+                i = j + 1
+            }
+        }
+        return words.filterIndexed { n, _ -> !drop[n] } to extra
+    }
+
+    /**
+     * Сглаживание меток внутри предложения. Диаризация режет по звуку, а не по смыслу: когда второй
+     * собеседник поддакивает («да», «угу») поверх чужой речи, граница сегмента съезжает на начало
+     * поддакивания, и хвост чужой фразы уходит ему — реплика рвётся посреди предложения.
+     *
+     * Внутри предложения (границы — .!?…, тире реплики «—» и пауза длиннее [pauseGap] с) находим спикера,
+     * который говорит дольше всех, и отдаём ему куски других спикеров короче [maxRunSec] с.
+     * Длинные куски не трогаем: это может быть настоящая смена говорящего без знака препинания.
+     * [maxRunSec] ≤ 0 — сглаживание выключено.
+     */
+    fun smoothSpeakers(words: List<TimedWord>, maxRunSec: Float, pauseGap: Float = 1f): List<TimedWord> {
+        if (maxRunSec <= 0f || words.size < 2) return words
+        val out = words.toMutableList()
+        for (r in sentenceRanges(words, pauseGap)) smoothSentence(out, r.first, r.last + 1, maxRunSec)
+        return out
+    }
+
+    private fun smoothSentence(words: MutableList<TimedWord>, from: Int, to: Int, maxRunSec: Float) {
+        if (to - from < 2) return
+        if ((from until to).all { words[it].speaker == words[from].speaker }) return
+        val main = mainSpeaker(words, from until to)
+        var i = from
+        while (i < to) {
+            var j = i
+            while (j + 1 < to && words[j + 1].speaker == words[i].speaker) j++
+            if (words[i].speaker != main && words[j].end - words[i].start < maxRunSec) {
+                for (k in i..j) words[k] = words[k].copy(speaker = main)
+            }
+            i = j + 1
+        }
+    }
+
+    private fun endsSentence(text: String): Boolean = text.trimEnd('»', '"', '\'', ')').let {
+        it.endsWith('.') || it.endsWith('!') || it.endsWith('?') || it.endsWith('…') || it.endsWith('—')
+    }
+
     /**
      * Новая реплика — при смене спикера, паузе дольше [splitGap] с или паузе дольше [sentenceGap] с
-     * после конца предложения. Спикеры нумеруются по порядку появления.
+     * после конца предложения. [extra] — готовые реплики-поддакивания из [extractBackchannels], встают
+     * по времени начала. Спикеры нумеруются по порядку появления.
      */
-    fun buildUtterances(words: List<TimedWord>, splitGap: Float, sentenceGap: Float = Float.MAX_VALUE): List<Utterance> {
+    fun buildUtterances(
+        words: List<TimedWord>,
+        splitGap: Float,
+        sentenceGap: Float = Float.MAX_VALUE,
+        extra: List<List<TimedWord>> = emptyList(),
+    ): List<Utterance> {
         val groups = ArrayList<MutableList<TimedWord>>()
         for (w in words) {
             val cur = groups.lastOrNull()
@@ -101,6 +232,10 @@ internal object WordMerger {
             } else {
                 cur += w
             }
+        }
+        if (extra.isNotEmpty()) {
+            extra.filter { it.isNotEmpty() }.forEach { groups += it.toMutableList() }
+            groups.sortBy { it.first().start } // сортировка устойчивая
         }
         val names = HashMap<Int, String>()
         return groups.map { g ->

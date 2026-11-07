@@ -104,9 +104,7 @@ class SherpaPipeline @Inject constructor(
             val words = stage(Stage.ASR) { transcribe(pcm, chunks, language, segments, tuning) }
             ensureActive()
 
-            val utterances = stage(Stage.MERGE) {
-                WordMerger.buildUtterances(words, tuning.splitGap, tuning.sentenceGap)
-            }
+            val utterances = stage(Stage.MERGE) { merge(pcm, words, segments, tuning) }
             send(done(utterances, audioMs, started, peakRam, stageTimes))
         } catch (e: CancellationException) {
             throw e
@@ -251,16 +249,35 @@ class SherpaPipeline @Inject constructor(
         val total = durations.values.sum()
         // нечего склеивать — не грузим модель эмбеддингов
         if (durations.size < 2 || durations.values.none { it < minOf(t.minSpeakerSec, 0.15f * total) }) return segs
-        val extractor = SpeakerEmbeddingExtractor(
-            assets,
-            SpeakerEmbeddingExtractorConfig(model = Paths.DIARIZATION_EMBEDDING, numThreads = threads),
-        )
+        val extractor = createExtractor()
+        val embeddings = try {
+            speakerEmbeddings(extractor, pcm, segs, durations.keys)
+        } finally {
+            extractor.release()
+        }
+        if (embeddings.size < 2) return segs
+        val label = Reclusterer.relabel(embeddings, durations, t.minSpeakerSec)
+        Log.i(TAG, "recluster: ${durations.size} → ${label.values.toSet().size} спикеров")
+        return segs.map { it.copy(speaker = label.getValue(it.speaker)) }
+    }
+
+    private fun createExtractor() = SpeakerEmbeddingExtractor(
+        assets,
+        SpeakerEmbeddingExtractorConfig(model = Paths.DIARIZATION_EMBEDDING, numThreads = threads),
+    )
+
+    /** Эмбеддинг каждого спикера по его самым длинным сегментам, до [EMB_MAX_SEC] с — как в bench. */
+    private fun speakerEmbeddings(
+        extractor: SpeakerEmbeddingExtractor,
+        pcm: FloatArray,
+        segs: List<SpeakerSegment>,
+        speakers: Collection<Int>,
+    ): Map<Int, FloatArray> {
         val embeddings = HashMap<Int, FloatArray>()
-        try {
-            for (k in durations.keys.sorted()) {
-                val stream = extractor.createStream()
+        for (k in speakers.sorted()) {
+            val stream = extractor.createStream()
+            try {
                 var taken = 0f
-                // самые длинные сегменты первыми, до 30 с — как в bench
                 for (s in segs.filter { it.speaker == k }.sortedByDescending { it.end - it.start }) {
                     if (taken >= EMB_MAX_SEC) break
                     val from = (s.start * SR).toInt().coerceIn(0, pcm.size)
@@ -270,15 +287,70 @@ class SherpaPipeline @Inject constructor(
                 }
                 stream.inputFinished()
                 if (extractor.isReady(stream)) embeddings[k] = Reclusterer.normalize(extractor.compute(stream))
+            } finally {
                 stream.release()
             }
+        }
+        return embeddings
+    }
+
+    /** Нормированный эмбеддинг куска [start, end) с, null — слишком короткий. */
+    private fun embed(extractor: SpeakerEmbeddingExtractor, pcm: FloatArray, start: Float, end: Float): FloatArray? {
+        val from = (start * SR).toInt().coerceIn(0, pcm.size)
+        val to = (end * SR).toInt().coerceIn(from, pcm.size)
+        if (to <= from) return null
+        val stream = extractor.createStream()
+        return try {
+            stream.acceptWaveform(pcm.copyOfRange(from, to), SR)
+            stream.inputFinished()
+            if (extractor.isReady(stream)) Reclusterer.normalize(extractor.compute(stream)) else null
+        } finally {
+            stream.release()
+        }
+    }
+
+    /**
+     * Слова со спикерами → реплики: переоценка предложений по голосу ([SentenceRelabeler]), поддакивания
+     * отдельными репликами, сглаживание коротких кусков внутри предложения. 1:1 с концом run() в bench.
+     */
+    private suspend fun ProducerScope<PipelineEvent>.merge(
+        pcm: FloatArray,
+        words: List<TimedWord>,
+        segments: List<SpeakerSegment>,
+        t: Tuning,
+    ): List<com.lapcevichme.meowscribe.domain.model.Utterance> {
+        val relabeled = relabelSentences(pcm, words, segments, t)
+        val (main, backchannels) = WordMerger.extractBackchannels(relabeled, t.backchannelMaxSec)
+        Log.i(TAG, "merge: поддакиваний отдельно ${backchannels.size}")
+        return WordMerger.buildUtterances(WordMerger.smoothSpeakers(main, t.smoothRunSec), t.splitGap, t.sentenceGap, backchannels)
+    }
+
+    private suspend fun ProducerScope<PipelineEvent>.relabelSentences(
+        pcm: FloatArray,
+        words: List<TimedWord>,
+        segments: List<SpeakerSegment>,
+        t: Tuning,
+    ): List<TimedWord> {
+        if (t.sentenceMinSec <= 0f) return words
+        val durations = segments.groupBy { it.speaker }.mapValues { (_, l) -> l.sumOf { (it.end - it.start).toDouble() }.toFloat() }
+        if (durations.size < 2) return words
+        val ranges = SentenceRelabeler.candidates(words, t.sentenceMinSec)
+        if (ranges.isEmpty()) return words
+        val extractor = createExtractor()
+        try {
+            val centroids = speakerEmbeddings(extractor, pcm, segments, durations.keys)
+            if (centroids.size < 2) return words
+            val embeddings = ranges.mapIndexed { i, r ->
+                ensureActive()
+                if (i % 16 == 0) send(PipelineEvent.Progress(Stage.MERGE, i.toFloat() / ranges.size, "Сверяем голоса"))
+                embed(extractor, pcm, words[r.first].start, words[r.last].end)
+            }
+            val out = SentenceRelabeler.relabel(words, ranges, embeddings, centroids, durations, t.sentenceMargin, t.sentenceMajorShare)
+            Log.i(TAG, "sentences: ${ranges.size} сверено, переназначено ${ranges.count { out[it.first].speaker != words[it.first].speaker }}")
+            return out
         } finally {
             extractor.release()
         }
-        if (embeddings.size < 2) return segs
-        val label = Reclusterer.relabel(embeddings, durations, t.minSpeakerSec)
-        Log.i(TAG, "recluster: ${durations.size} → ${label.values.toSet().size} спикеров")
-        return segs.map { it.copy(speaker = label.getValue(it.speaker)) }
     }
 
     private suspend fun ProducerScope<PipelineEvent>.transcribe(
@@ -304,12 +376,12 @@ class SherpaPipeline @Inject constructor(
                         offset = range.first.toFloat() / SR,
                         chunkEnd = (range.last + 1).toFloat() / SR,
                     )
-                    words += WordMerger.assignSpeakers(chunkWords, segments)
+                    words += WordMerger.assignBackchannels(WordMerger.assignSpeakers(chunkWords, segments), segments)
                 } finally {
                     stream.release()
                 }
                 send(PipelineEvent.Progress(Stage.ASR, (i + 1f) / chunks.size, "Фрагмент ${i + 1}/${chunks.size}"))
-                send(PipelineEvent.Partial(WordMerger.buildUtterances(words, t.splitGap, t.sentenceGap)))
+                send(PipelineEvent.Partial(WordMerger.buildUtterances(WordMerger.smoothSpeakers(words, t.smoothRunSec), t.splitGap, t.sentenceGap)))
             }
         } finally {
             recognizer.release()
@@ -396,6 +468,19 @@ class SherpaPipeline @Inject constructor(
         val pad: Float = 0.15f,
         val splitGap: Float = 3f,
         val sentenceGap: Float = 0.4f,
+        /**
+         * Куски другого спикера короче этого внутри предложения отдаются основному, см. WordMerger.smoothSpeakers.
+         * 0 — выкл. Стенд AMI: 2 с портило DER (+0.9 п.п.), 1 с почти не мешает и убирает разрывы фраз.
+         */
+        val smoothRunSec: Float = 1f,
+        /** Поддакивания короче этого — отдельными репликами, см. WordMerger.extractBackchannels. 0 — выкл. */
+        val backchannelMaxSec: Float = 1.5f,
+        /** Предложения от этой длины сверяются по голосу, см. [SentenceRelabeler]. 0 — выкл. */
+        val sentenceMinSec: Float = 1.5f,
+        /** Перевес косинуса к другому спикеру, с которого предложение переходит к нему. */
+        val sentenceMargin: Float = 0.1f,
+        /** Предложения отдаём только спикерам с такой долей речи, а не мелким обрывкам кластеризации. */
+        val sentenceMajorShare: Float = 0.1f,
     ) {
         companion object {
             // стенд (ru): FAST — DER 8.9%, RTF ×0.66; ACCURATE — DER 6.9%. WER одинаковый.

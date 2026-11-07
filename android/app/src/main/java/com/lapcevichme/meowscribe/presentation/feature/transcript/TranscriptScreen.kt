@@ -382,7 +382,10 @@ private fun buildRows(utterances: List<Utterance>): List<Row> {
     }
 }
 
-/** Последняя реплика, начавшаяся не позже позиции плеера. */
+/**
+ * Последняя реплика, начавшаяся не позже позиции плеера. Реплики могут перекрываться (поддакивание
+ * внутри чужой фразы): если последняя уже закончилась, а более ранняя ещё звучит — подсвечиваем её.
+ */
 private fun activeUtterance(utterances: List<Utterance>, positionMs: Long): Int {
     var lo = 0
     var hi = utterances.lastIndex
@@ -390,6 +393,11 @@ private fun activeUtterance(utterances: List<Utterance>, positionMs: Long): Int 
     while (lo <= hi) {
         val mid = (lo + hi) / 2
         if (utterances[mid].startMs <= positionMs) { ans = mid; lo = mid + 1 } else hi = mid - 1
+    }
+    if (ans > 0 && utterances[ans].endMs < positionMs) {
+        for (i in ans - 1 downTo maxOf(0, ans - 4)) {
+            if (utterances[i].endMs >= positionMs) return i
+        }
     }
     return ans
 }
