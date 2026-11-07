@@ -1,6 +1,8 @@
 package com.lapcevichme.meowscribe
 
 import com.lapcevichme.meowscribe.data.audio.Resampler
+import com.lapcevichme.meowscribe.data.audio.StreamingResampler
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import kotlin.math.abs
@@ -28,4 +30,27 @@ class ResamplerTest {
     @Test fun downsample48000() = assertSameAsDirect(48000, 16000)
     @Test fun downsample22050() = assertSameAsDirect(22050, 16000)
     @Test fun upsample8000() = assertSameAsDirect(8000, 16000)
+
+    /** Потоковый ресемплер на кусках случайной длины даёт ровно то же, что пакетный на всём сигнале. */
+    private fun assertStreamingSame(from: Int, to: Int) {
+        val input = signal(from * 3 + 457, from)
+        val batch = Resampler.resample(input, from, to)
+        val rnd = Random(7)
+        val out = ArrayList<Float>()
+        val rs = StreamingResampler(from, to) { buf, n -> for (i in 0 until n) out += buf[i] }
+        var pos = 0
+        while (pos < input.size) {
+            val n = minOf(input.size - pos, 1 + rnd.nextInt(5000))
+            rs.push(input.copyOfRange(pos, pos + n), n)
+            pos += n
+        }
+        rs.finish()
+        assertArrayEquals("$from→$to", batch, out.toFloatArray(), 0f)
+    }
+
+    @Test fun streaming44100() = assertStreamingSame(44100, 16000)
+    @Test fun streaming48000() = assertStreamingSame(48000, 16000)
+    @Test fun streaming8000() = assertStreamingSame(8000, 16000)
+    @Test fun streaming16000() = assertStreamingSame(16000, 16000)
+    @Test fun streamingOddRate() = assertStreamingSame(44057, 16000) // up > MAX_PHASES — прямой вариант
 }

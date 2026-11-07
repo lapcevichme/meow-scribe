@@ -12,11 +12,11 @@ import kotlin.math.sin
  * до новой частоты Найквиста, так что алиасинга нет. Ядро табулировано, поэтому sin в горячем цикле не считается.
  */
 object Resampler {
-    private const val ZERO_CROSSINGS = 16
+    internal const val ZERO_CROSSINGS = 16
     private const val TABLE_RES = 512
 
     /** Больше фаз — таблица весов перестаёт быть дешёвой; для «странных» частот считаем ядро на лету. */
-    private const val MAX_PHASES = 2048
+    internal const val MAX_PHASES = 2048
 
     fun resample(input: FloatArray, fromRate: Int, toRate: Int): FloatArray {
         if (fromRate == toRate || input.isEmpty()) return input
@@ -105,7 +105,7 @@ object Resampler {
     }
 
     /** table[k] = sinc(x) * blackman(x), x = k / TABLE_RES, 0 ≤ x ≤ ZERO_CROSSINGS. */
-    private fun buildTable(): DoubleArray {
+    internal fun buildTable(): DoubleArray {
         val n = ZERO_CROSSINGS * TABLE_RES + 2
         return DoubleArray(n) { k ->
             val x = k.toDouble() / TABLE_RES
@@ -116,9 +116,9 @@ object Resampler {
         }
     }
 
-    private tailrec fun gcd(a: Int, b: Int): Int = if (b == 0) a else gcd(b, a % b)
+    internal tailrec fun gcd(a: Int, b: Int): Int = if (b == 0) a else gcd(b, a % b)
 
-    private fun kernel(table: DoubleArray, x: Double): Double {
+    internal fun kernel(table: DoubleArray, x: Double): Double {
         val ax = if (x < 0) -x else x
         if (ax >= ZERO_CROSSINGS) return 0.0
         val pos = ax * TABLE_RES

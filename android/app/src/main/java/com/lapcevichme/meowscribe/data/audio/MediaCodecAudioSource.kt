@@ -60,14 +60,18 @@ class MediaCodecAudioSource @Inject constructor(
     override suspend fun decode(localUri: String, onProgress: (Float) -> Unit): DecodedAudio =
         withContext(Dispatchers.Default) {
             val t0 = SystemClock.elapsedRealtime()
-            val (mono, sampleRate) = decodeToMono(Uri.parse(localUri), onProgress)
-            val t1 = SystemClock.elapsedRealtime()
-            val pcm = Resampler.resample(mono, sampleRate, TranscriptionPipeline.SAMPLE_RATE)
-            Log.i(TAG, "decode ${t1 - t0} мс, resample $sampleRate→16000 ${SystemClock.elapsedRealtime() - t1} мс, аудио ${pcm.size / 16} мс")
-            DecodedAudio(pcm, pcm.size * 1000L / TranscriptionPipeline.SAMPLE_RATE)
+            val (pcm, samples) = decodeTo16k(Uri.parse(localUri), onProgress)
+            val durationMs = samples * 1000L / TranscriptionPipeline.SAMPLE_RATE
+            Log.i(TAG, "decode+resample ${SystemClock.elapsedRealtime() - t0} мс, аудио $durationMs мс, буфер ${pcm.size * 4L shr 20} МБ")
+            DecodedAudio(pcm, durationMs)
         }
 
-    private suspend fun decodeToMono(uri: Uri, onProgress: (Float) -> Unit): Pair<FloatArray, Int> {
+    /**
+     * Декодирует, сводит в моно и сразу передискретизирует в 16 кГц — кусками, по мере выхода из декодера.
+     * Целиком в памяти только результат: полтора часа — 346 МБ вместо ~1 ГБ на исходной частоте плюс копий.
+     * @return массив и число реальных отсчётов в нём (хвост массива может быть тишиной, см. [Pcm16kBuilder]).
+     */
+    private suspend fun decodeTo16k(uri: Uri, onProgress: (Float) -> Unit): Pair<FloatArray, Int> {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         try {
@@ -89,7 +93,9 @@ class MediaCodecAudioSource @Inject constructor(
             dec.configure(format, null, null, 0)
             dec.start()
 
-            val out = FloatBuilder(if (durationUs > 0) (durationUs / 1_000_000.0 * sampleRate).toInt() + 4096 else 1 shl 20)
+            val out = Pcm16kBuilder(durationUs)
+            var resampler: StreamingResampler? = null
+            var mono = FloatArray(0)
             val info = MediaCodec.BufferInfo()
             var inputDone = false
             var outputDone = false
@@ -127,19 +133,25 @@ class MediaCodecAudioSource @Inject constructor(
                         buf.position(info.offset)
                         buf.limit(info.offset + info.size)
                         buf.order(ByteOrder.nativeOrder())
-                        if (encoding == AudioFormat.ENCODING_PCM_FLOAT) {
+                        // Частота известна точно только после INFO_OUTPUT_FORMAT_CHANGED (у HE-AAC она вдвое выше, чем в контейнере).
+                        val rs = resampler ?: StreamingResampler(sampleRate, TranscriptionPipeline.SAMPLE_RATE, out::append)
+                            .also { resampler = it }
+                        val frames = if (encoding == AudioFormat.ENCODING_PCM_FLOAT) {
                             val fb = buf.asFloatBuffer()
                             val n = fb.remaining()
                             if (floatScratch.size < n) floatScratch = FloatArray(n)
                             fb.get(floatScratch, 0, n)
-                            out.addInterleaved(floatScratch, n, channels, 1f)
+                            if (mono.size < n / channels) mono = FloatArray(n / channels)
+                            downmix(floatScratch, n, channels, mono)
                         } else {
                             val sb = buf.asShortBuffer()
                             val n = sb.remaining()
                             if (shortScratch.size < n) shortScratch = ShortArray(n)
                             sb.get(shortScratch, 0, n)
-                            out.addInterleaved(shortScratch, n, channels)
+                            if (mono.size < n / channels) mono = FloatArray(n / channels)
+                            downmix(shortScratch, n, channels, mono)
                         }
+                        rs.push(mono, frames)
                         dec.releaseOutputBuffer(outIdx, false)
                         if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outputDone = true
                         if (outputDone) {
@@ -155,7 +167,8 @@ class MediaCodecAudioSource @Inject constructor(
                     }
                 }
             }
-            return out.toArray() to sampleRate
+            resampler?.finish()
+            return out.result()
         } finally {
             runCatching { codec?.stop() }
             runCatching { codec?.release() }
@@ -179,44 +192,60 @@ class MediaCodecAudioSource @Inject constructor(
         }
     }
 
-    /** Растущий FloatArray без боксинга. */
-    private class FloatBuilder(initial: Int) {
-        private var data = FloatArray(initial.coerceAtLeast(1024))
+    /** Сводит interleaved PCM16 к моно. @return число кадров. */
+    private fun downmix(src: ShortArray, n: Int, channels: Int, dst: FloatArray): Int {
+        val frames = n / channels
+        val scale = 1f / (32768f * channels)
+        var k = 0
+        for (fr in 0 until frames) {
+            var sum = 0
+            for (c in 0 until channels) sum += src[k++]
+            dst[fr] = sum * scale
+        }
+        return frames
+    }
+
+    /** Сводит interleaved float PCM к моно. @return число кадров. */
+    private fun downmix(src: FloatArray, n: Int, channels: Int, dst: FloatArray): Int {
+        val frames = n / channels
+        val scale = 1f / channels
+        var k = 0
+        for (fr in 0 until frames) {
+            var sum = 0f
+            for (c in 0 until channels) sum += src[k++]
+            dst[fr] = sum * scale
+        }
+        return frames
+    }
+
+    /**
+     * Буфер результата на 16 кГц. Размер берём из длительности контейнера с запасом в секунду и выделяем
+     * один раз: удвоение и финальный copyOf на длинной записи требовали бы ещё столько же памяти.
+     */
+    private class Pcm16kBuilder(durationUs: Long) {
+        private var data = FloatArray(
+            if (durationUs > 0) (durationUs * TranscriptionPipeline.SAMPLE_RATE / 1_000_000L).toInt() + SLACK
+            else TranscriptionPipeline.SAMPLE_RATE * 60,
+        )
         private var size = 0
-        fun add(v: Float) {
-            if (size == data.size) data = data.copyOf(data.size * 2)
-            data[size++] = v
-        }
-        fun toArray(): FloatArray = data.copyOf(size)
 
-        private fun ensure(extra: Int) {
-            if (size + extra > data.size) data = data.copyOf(maxOf(data.size * 2, size + extra))
-        }
-
-        /** Сводит interleaved PCM16 к моно. */
-        fun addInterleaved(src: ShortArray, n: Int, channels: Int) {
-            val frames = n / channels
-            ensure(frames)
-            val scale = 1f / (32768f * channels)
-            var k = 0
-            for (fr in 0 until frames) {
-                var sum = 0
-                for (c in 0 until channels) sum += src[k++]
-                data[size++] = sum * scale
+        fun append(src: FloatArray, n: Int) {
+            if (size + n > data.size) {
+                // Длительность в контейнере оказалась меньше реальной — растём понемногу, а не вдвое.
+                data = data.copyOf(size + n + maxOf(SLACK, data.size / 8))
             }
+            System.arraycopy(src, 0, data, size, n)
+            size += n
         }
 
-        /** Сводит interleaved float PCM к моно. */
-        fun addInterleaved(src: FloatArray, n: Int, channels: Int, gain: Float) {
-            val frames = n / channels
-            ensure(frames)
-            val scale = gain / channels
-            var k = 0
-            for (fr in 0 until frames) {
-                var sum = 0f
-                for (c in 0 until channels) sum += src[k++]
-                data[size++] = sum * scale
-            }
+        /** Небольшой хвост из нулей оставляем как есть (это тишина), большой — обрезаем копией. */
+        fun result(): Pair<FloatArray, Int> {
+            if (data.size - size > SLACK * 2) data = data.copyOf(size)
+            return data to size
+        }
+
+        private companion object {
+            const val SLACK = TranscriptionPipeline.SAMPLE_RATE // 1 с
         }
     }
 }
