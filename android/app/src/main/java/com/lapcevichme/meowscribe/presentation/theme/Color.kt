@@ -1,4 +1,4 @@
-package com.lapcevichme.meowscribe.ui.theme
+package com.lapcevichme.meowscribe.presentation.theme
 
 import androidx.compose.ui.graphics.Color
 

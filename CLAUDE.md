@@ -52,6 +52,58 @@ Kotlin, Jetpack Compose, Material 3 (Expressive), Media3 (ExoPlayer), Room. Ин
 - `FakePipeline` — для разработки UI;
 - `SherpaPipeline` — настоящая реализация.
 
-## Структура проекта
+## Структура репозитория
 
-_Заполнить после создания Gradle-проекта в Android Studio._
+```
+meow-scribe/
+├── CLAUDE.md
+├── docs/        # кейс, план, Q&A
+├── android/     # Gradle-проект (открывать в Android Studio именно эту папку)
+└── bench/       # Python-стенд на sherpa-onnx, eval-скрипты, fetch_models.sh (oatis123)
+```
+
+## Архитектура Android-приложения
+
+Clean architecture **на пакетах** в одном модуле `:app`, MVVM + UiState, DI на Hilt.
+Корневой пакет: `com.lapcevichme.meowscribe` (`android/app/src/main/java/com/lapcevichme/meowscribe/`).
+
+```
+domain/                      # чистый Kotlin, без android.*
+├── model/                   # Utterance, Word, PipelineConfig, Profile, Session …
+├── pipeline/                # TranscriptionPipeline, PipelineEvent, Stage, Stats — КОНТРАКТ
+├── repository/              # интерфейсы: SessionRepository, AudioDecoder, TranscriptExporter
+└── usecase/                 # только где есть логика (ProcessAudio, Export)
+data/
+├── pipeline/fake/           # FakePipeline — для разработки UI
+├── pipeline/sherpa/         # SherpaPipeline: VAD, диаризация, ASR, склейка (oatis123)
+├── llm/                     # обёртка llama.cpp (oatis123)
+├── audio/                   # декодер MediaCodec → 16 кГц моно float, запись с микрофона
+├── db/                      # Room
+├── export/                  # JSON (строгая схема), TXT, SRT
+├── models/                  # ModelLocator — пути к весам, копирование .gguf из assets
+└── repository/              # реализации интерфейсов domain
+service/                     # Foreground Service обработки
+di/                          # Hilt-модули
+presentation/
+├── common/                  # Lce и общие UI-утилиты
+├── theme/  navigation/  components/
+└── feature/{home,processing,transcript}/
+```
+
+### Владение кодом
+
+- oatis123: `data/pipeline/sherpa/`, `data/llm/`, `bench/`.
+- Михаил: всё остальное.
+- `domain/pipeline/` и `domain/model/` — общий контракт, менять только по договорённости.
+
+### Соглашения presentation
+
+- `ViewModel` отдаёт `StateFlow<XxxUiState>`. Загрузка контента описывается через `Lce<T>` (`presentation/common/Lce.kt`), а плеер, режим редактирования и т. п. лежат отдельными полями `UiState` рядом с `Lce`.
+- Разовые события (снекбар, навигация) идут через `Channel` → `receiveAsFlow()`.
+- Обработку держит не ViewModel, а `@Singleton ProcessingRepository` со `StateFlow`. Запускает её Foreground Service, ViewModel только подписывается.
+
+### ML-модели (веса)
+
+- Лежат в `android/app/src/main/assets/models/{vad,asr,diarization,llm}/`. В git их нет, скачиваются скриптом `bench/fetch_models.sh`. Python-стенд берёт веса оттуда же.
+- sherpa-onnx читает модели прямо из `AssetManager`. `.gguf` для llama.cpp при первом запуске копируется в `filesDir`.
+- Все пути к весам задаются только в `data/models/ModelLocator`.
