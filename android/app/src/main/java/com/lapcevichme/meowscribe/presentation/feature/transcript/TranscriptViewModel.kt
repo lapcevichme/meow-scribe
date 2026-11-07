@@ -14,6 +14,7 @@ import com.lapcevichme.meowscribe.domain.model.SessionStatus
 import com.lapcevichme.meowscribe.domain.model.Utterance
 import com.lapcevichme.meowscribe.domain.repository.SessionRepository
 import com.lapcevichme.meowscribe.domain.usecase.ExportTranscriptUseCase
+import com.lapcevichme.meowscribe.domain.usecase.SplitUtteranceUseCase
 import com.lapcevichme.meowscribe.presentation.components.speakerIndex
 import com.lapcevichme.meowscribe.presentation.navigation.TranscriptRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -65,6 +66,7 @@ class TranscriptViewModel @Inject constructor(
     @ApplicationContext context: Context,
     private val repository: SessionRepository,
     private val export: ExportTranscriptUseCase,
+    private val splitUtterance: SplitUtteranceUseCase,
 ) : ViewModel() {
 
     val sessionId: Long = savedStateHandle.toRoute<TranscriptRoute>().sessionId
@@ -163,6 +165,13 @@ class TranscriptViewModel @Inject constructor(
 
     fun editUtterance(index: Int, text: String, speakerId: String) {
         viewModelScope.launch { repository.updateUtterance(sessionId, index, text.trim(), speakerId) }
+    }
+
+    fun split(index: Int, text: String, cursor: Int, speakerId: String) {
+        viewModelScope.launch {
+            val ok = splitUtterance(sessionId, index, text.trim(), cursor, speakerId)
+            _events.send(TranscriptEvent.Message(if (ok) "Реплика разделена" else "Поставьте курсор внутрь текста"))
+        }
     }
 
     fun exportTo(uri: String) = launchExport("Сохранено") { export.toUri(sessionId, uri) }

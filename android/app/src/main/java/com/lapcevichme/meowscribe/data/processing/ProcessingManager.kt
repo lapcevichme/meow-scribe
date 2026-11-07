@@ -60,8 +60,6 @@ class ProcessingManager @Inject constructor(
     private val _busy = MutableStateFlow(false)
     override val busy: StateFlow<Boolean> = _busy.asStateFlow()
 
-    var config: PipelineConfig = PipelineConfig()
-
     init {
         scope.launch {
             for (id in queue) {
@@ -99,7 +97,7 @@ class ProcessingManager @Inject constructor(
     private suspend fun process(id: Long) {
         val session = repository.getSession(id) ?: return
         currentId = id
-        val job = scope.launch { runSession(id, session.audioUri) }
+        val job = scope.launch { runSession(id, session.audioUri, session.config) }
         currentJob = job
         job.join()
         currentJob = null
@@ -107,7 +105,7 @@ class ProcessingManager @Inject constructor(
         _progress.update { it - id }
     }
 
-    private suspend fun runSession(id: Long, audioUri: String) {
+    private suspend fun runSession(id: Long, audioUri: String, config: PipelineConfig) {
         val started = SystemClock.elapsedRealtime()
         val stageTimes = mutableMapOf<Stage, Long>()
         var stageStarted = started

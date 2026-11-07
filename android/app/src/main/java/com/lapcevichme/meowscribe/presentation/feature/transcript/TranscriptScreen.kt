@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
@@ -47,6 +48,7 @@ import androidx.compose.material3.HorizontalFloatingToolbar
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -83,6 +85,8 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -152,6 +156,8 @@ fun TranscriptScreen(
                     onSeek = viewModel::seekTo,
                     onRename = viewModel::renameSpeaker,
                     onEdit = viewModel::editUtterance,
+                    onSplit = viewModel::split,
+                    onCopy = { context.copyToClipboard(it) },
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -196,6 +202,8 @@ private fun TranscriptBody(
     onSeek: (Long, Boolean) -> Unit,
     onRename: (String, String?) -> Unit,
     onEdit: (Int, String, String) -> Unit,
+    onSplit: (Int, String, Int, String) -> Unit,
+    onCopy: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val utterances = content.utterances
@@ -273,6 +281,8 @@ private fun TranscriptBody(
             onDismiss = { editing = null },
             onPlayFrom = { onSeek(utterances[index].startMs, true); editing = null },
             onSave = { text, speaker -> onEdit(index, text, speaker); editing = null },
+            onSplit = { text, cursor, speaker -> onSplit(index, text, cursor, speaker); editing = null },
+            onCopy = { onCopy(it); editing = null },
         )
     }
 }
@@ -664,17 +674,27 @@ private fun EditSheet(
     onDismiss: () -> Unit,
     onPlayFrom: () -> Unit,
     onSave: (String, String) -> Unit,
+    onSplit: (String, Int, String) -> Unit,
+    onCopy: (String) -> Unit,
 ) {
-    var text by remember(utterance) { mutableStateOf(utterance.text) }
+    var field by remember(utterance) { mutableStateOf(TextFieldValue(utterance.text, TextRange(utterance.text.length))) }
+    val text = field.text
+    val cursor = field.selection.start
+    val canSplit = text.substring(0, cursor.coerceIn(0, text.length)).isNotBlank() &&
+        text.substring(cursor.coerceIn(0, text.length)).isNotBlank()
     var speaker by remember(utterance) { mutableStateOf(utterance.speakerId) }
     val newSpeakerId = remember(speakerIds) {
         "speaker_${(speakerIds.maxOfOrNull { speakerIndex(it) } ?: -1) + 2}"
     }
     val options = speakerIds + newSpeakerId
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp),
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text(
@@ -683,15 +703,17 @@ private fun EditSheet(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
+                value = field,
+                onValueChange = { field = it },
                 modifier = Modifier.fillMaxWidth(),
                 minLines = 2,
                 label = { Text("Текст") },
+                supportingText = { Text("Чтобы разделить реплику, поставьте курсор на границу") },
             )
             Text("Кто говорит", style = MaterialTheme.typography.titleSmall)
+            // Кнопки по ширине содержимого, при нехватке места ряд прокручивается: имена не обрезаются.
             Row(
-                Modifier.fillMaxWidth(),
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
             ) {
                 options.forEachIndexed { i, id ->
@@ -699,7 +721,6 @@ private fun EditSheet(
                     ToggleButton(
                         checked = speaker == id,
                         onCheckedChange = { speaker = id },
-                        modifier = Modifier.weight(if (speaker == id) 1.4f else 1f),
                         shapes = when (i) {
                             0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
                             options.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
@@ -714,12 +735,15 @@ private fun EditSheet(
                     }
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onPlayFrom) {
-                    Icon(painterResource(R.drawable.ic_play_from), null, Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Воспроизвести отсюда")
-                }
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))) {
+                SheetAction(R.drawable.ic_play_from, "Воспроизвести отсюда", onClick = onPlayFrom)
+                SheetAction(
+                    R.drawable.ic_split,
+                    "Разделить реплику по курсору",
+                    enabled = canSplit,
+                    onClick = { onSplit(text, cursor, speaker) },
+                )
+                SheetAction(R.drawable.ic_copy, "Копировать текст", onClick = { onCopy(text) })
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
                 TextButton(onClick = onDismiss) { Text("Отмена") }
@@ -728,6 +752,27 @@ private fun EditSheet(
                     enabled = text.isNotBlank() && (text != utterance.text || speaker != utterance.speakerId),
                 ) { Text("Сохранить") }
             }
+        }
+    }
+}
+
+@Composable
+private fun SheetAction(icon: Int, label: String, enabled: Boolean = true, onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        color = cs.surfaceContainerHigh,
+        modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            val tint = if (enabled) cs.onSurface else cs.onSurface.copy(alpha = 0.38f)
+            Icon(painterResource(icon), contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
+            Text(label, style = MaterialTheme.typography.bodyLarge, color = tint)
         }
     }
 }

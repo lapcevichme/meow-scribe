@@ -14,7 +14,10 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -23,7 +26,12 @@ import javax.inject.Inject
 
 enum class HomeFilter { ALL, DONE, IN_PROGRESS }
 
-data class SessionItem(val session: Session, val progress: ProcessingProgress?)
+data class SessionItem(
+    val session: Session,
+    val progress: ProcessingProgress?,
+    /** Реплика, в которой нашёлся поисковый запрос. */
+    val snippet: String? = null,
+)
 
 data class HomeUiState(
     val isLoading: Boolean = true,
@@ -33,6 +41,7 @@ data class HomeUiState(
     val processingCount: Int = 0,
     val queuedCount: Int = 0,
     val isImporting: Boolean = false,
+    val query: String = "",
 )
 
 sealed interface HomeEvent {
@@ -49,6 +58,14 @@ class HomeViewModel @Inject constructor(
 
     private val filter = MutableStateFlow(HomeFilter.ALL)
     private val importing = MutableStateFlow(false)
+    private val query = MutableStateFlow("")
+
+    private data class Search(val query: String, val matches: Map<Long, String>)
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val search = query.flatMapLatest { q ->
+        repository.searchTranscripts(q).map { Search(q.trim(), it) }
+    }
 
     private val _events = Channel<HomeEvent>(Channel.BUFFERED)
     val events = _events.receiveAsFlow()
@@ -58,10 +75,15 @@ class HomeViewModel @Inject constructor(
         queue.progress,
         filter,
         importing,
-    ) { sessions, progress, f, isImporting ->
+        search,
+    ) { sessions, progress, f, isImporting, s ->
+        val found = if (s.query.isEmpty()) sessions else sessions.filter {
+            it.id in s.matches || it.title.contains(s.query, ignoreCase = true)
+        }
         HomeUiState(
             isLoading = false,
-            items = sessions.filter { it.matches(f) }.map { SessionItem(it, progress[it.id]) },
+            items = found.filter { it.matches(f) }.map { SessionItem(it, progress[it.id], s.matches[it.id]) },
+            query = s.query,
             filter = f,
             totalCount = sessions.size,
             processingCount = sessions.count { it.status == SessionStatus.PROCESSING },
@@ -86,9 +108,7 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    fun onRecordClicked() {
-        viewModelScope.launch { _events.send(HomeEvent.Message("Запись с микрофона появится в следующей версии")) }
-    }
+    fun setQuery(value: String) = query.update { value }
 
     fun retry(id: Long) = queue.enqueue(id)
 

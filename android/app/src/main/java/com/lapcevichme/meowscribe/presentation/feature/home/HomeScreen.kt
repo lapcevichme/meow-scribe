@@ -8,6 +8,15 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +41,8 @@ import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.FloatingActionButtonMenu
 import androidx.compose.material3.FloatingActionButtonMenuItem
 import androidx.compose.material3.Icon
@@ -88,6 +99,8 @@ private val AUDIO_MIME_TYPES = arrayOf("audio/*", "application/ogg", "video/mp4"
 @Composable
 fun HomeScreen(
     onOpenSession: (Session) -> Unit,
+    onRecord: () -> Unit,
+    onSettings: () -> Unit,
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -109,11 +122,17 @@ fun HomeScreen(
         }
     }
 
+    // Текст поля держим локально: если гонять его через StateFlow ViewModel, при быстром вводе теряются символы.
+    var query by rememberSaveable { mutableStateOf("") }
+
     HomeContent(
         state = state,
+        query = query,
         snackbar = snackbar,
         onImport = { picker.launch(AUDIO_MIME_TYPES) },
-        onRecord = viewModel::onRecordClicked,
+        onRecord = onRecord,
+        onSettings = onSettings,
+        onQuery = { query = it; viewModel.setQuery(it) },
         onFilter = viewModel::setFilter,
         onOpen = onOpenSession,
         onRetry = viewModel::retry,
@@ -125,9 +144,12 @@ fun HomeScreen(
 @Composable
 private fun HomeContent(
     state: HomeUiState,
+    query: String,
     snackbar: SnackbarHostState,
     onImport: () -> Unit,
     onRecord: () -> Unit,
+    onSettings: () -> Unit,
+    onQuery: (String) -> Unit,
     onFilter: (HomeFilter) -> Unit,
     onOpen: (Session) -> Unit,
     onRetry: (Long) -> Unit,
@@ -149,16 +171,29 @@ private fun HomeContent(
                 ),
                 verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
             ) {
-                item(key = "header") { Header(state) }
+                item(key = "header") { Header(state, onSettings) }
                 if (state.totalCount > 0) {
+                    item(key = "search") { SearchField(query, onQuery) }
                     item(key = "filters") { Filters(state.filter, onFilter) }
                 }
                 if (!state.isLoading && state.totalCount == 0) {
-                    item(key = "empty") { EmptyState(onImport) }
+                    item(key = "empty") { EmptyState(onImport, onRecord) }
+                }
+                if (state.totalCount > 0 && state.items.isEmpty() && state.query.isNotEmpty()) {
+                    item(key = "nothing") {
+                        Text(
+                            "По запросу «${state.query}» ничего не нашлось",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
+                            textAlign = TextAlign.Center,
+                        )
+                    }
                 }
                 itemsIndexed(state.items, key = { _, it -> it.session.id }) { index, item ->
                     SessionRow(
                         item = item,
+                        query = state.query,
                         index = index,
                         count = state.items.size,
                         onClick = { onOpen(item.session) },
@@ -219,19 +254,29 @@ private fun HomeContent(
 }
 
 @Composable
-private fun Header(state: HomeUiState) {
+private fun Header(state: HomeUiState, onSettings: () -> Unit) {
     Column(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 12.dp, start = 4.dp, end = 4.dp)) {
-        Surface(
-            color = MaterialTheme.colorScheme.secondaryContainer,
-            shape = CircleShape,
-        ) {
-            Row(
-                Modifier.padding(start = 8.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Surface(
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                shape = CircleShape,
             ) {
-                Icon(painterResource(R.drawable.ic_phone), contentDescription = null, modifier = Modifier.size(18.dp))
-                Text("Всё на устройстве", style = MaterialTheme.typography.labelLarge)
+                Row(
+                    Modifier.padding(start = 8.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(painterResource(R.drawable.ic_phone), contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text("Всё на устройстве", style = MaterialTheme.typography.labelLarge)
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            FilledTonalIconButton(
+                onClick = onSettings,
+                shapes = IconButtonDefaults.shapes(),
+                modifier = Modifier.size(48.dp),
+            ) {
+                Icon(painterResource(R.drawable.ic_tune), contentDescription = "Настройки")
             }
         }
         Spacer(Modifier.height(16.dp))
@@ -287,6 +332,7 @@ private fun Filters(selected: HomeFilter, onSelect: (HomeFilter) -> Unit) {
 @Composable
 private fun SessionRow(
     item: SessionItem,
+    query: String,
     index: Int,
     count: Int,
     onClick: () -> Unit,
@@ -315,6 +361,7 @@ private fun SessionRow(
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 val meta = listOfNotNull(s.durationMs?.let(::formatDuration), formatCreatedAt(s.createdAt))
                 Text(meta.joinToString(" · "))
+                item.snippet?.let { Snippet(it, query) }
                 when (s.status) {
                     SessionStatus.DONE -> SpeakersLine(s.speakerCount)
                     SessionStatus.PROCESSING -> ProgressLine(item)
@@ -394,7 +441,7 @@ private fun StatusAvatar(status: SessionStatus) {
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun EmptyState(onImport: () -> Unit) {
+private fun EmptyState(onImport: () -> Unit, onRecord: () -> Unit) {
     Column(
         Modifier.fillMaxWidth().padding(top = 48.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -416,6 +463,7 @@ private fun EmptyState(onImport: () -> Unit) {
             "Импортируйте аудио — расшифровка с разделением по спикерам пройдёт прямо на телефоне.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = 24.dp),
         )
         Button(onClick = onImport, shape = RoundedCornerShape(28.dp), modifier = Modifier.height(56.dp)) {
@@ -423,5 +471,76 @@ private fun EmptyState(onImport: () -> Unit) {
             Spacer(Modifier.width(10.dp))
             Text("Импортировать файлы")
         }
+        OutlinedButton(onClick = onRecord, shape = RoundedCornerShape(28.dp), modifier = Modifier.height(56.dp)) {
+            Icon(painterResource(R.drawable.ic_mic), contentDescription = null)
+            Spacer(Modifier.width(10.dp))
+            Text("Записать с микрофона")
+        }
     }
+}
+
+@Composable
+private fun SearchField(query: String, onQuery: (String) -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Surface(
+        color = cs.surfaceContainerHigh,
+        shape = CircleShape,
+        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+    ) {
+        Row(
+            Modifier.height(56.dp).padding(start = 18.dp, end = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(painterResource(R.drawable.ic_search), contentDescription = null, tint = cs.onSurfaceVariant)
+            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                if (query.isEmpty()) {
+                    Text("Поиск по расшифровкам", style = MaterialTheme.typography.bodyLarge, color = cs.onSurfaceVariant)
+                }
+                BasicTextField(
+                    value = query,
+                    onValueChange = onQuery,
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = cs.onSurface),
+                    cursorBrush = SolidColor(cs.primary),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Поиск по расшифровкам" },
+                )
+            }
+            if (query.isNotEmpty()) {
+                IconButton(onClick = { onQuery("") }) {
+                    Icon(painterResource(R.drawable.ic_close), contentDescription = "Очистить поиск")
+                }
+            }
+        }
+    }
+}
+
+/** Реплика с подсвеченным совпадением; длинный текст обрезается вокруг него. */
+@Composable
+private fun Snippet(text: String, query: String) {
+    val q = query.trim()
+    val at = if (q.isEmpty()) -1 else text.indexOf(q, ignoreCase = true)
+    val from = if (at > 40) text.lastIndexOf(' ', at - 30).coerceAtLeast(0) else 0
+    val shown = (if (from > 0) "…" else "") + text.substring(from).trimStart()
+    val hit = if (at < 0) -1 else shown.indexOf(q, ignoreCase = true)
+    val highlight = SpanStyle(
+        color = MaterialTheme.colorScheme.onTertiaryContainer,
+        background = MaterialTheme.colorScheme.tertiaryContainer,
+        fontWeight = FontWeight.SemiBold,
+    )
+    Text(
+        text = buildAnnotatedString {
+            if (hit < 0) {
+                append(shown)
+            } else {
+                append(shown.substring(0, hit))
+                withStyle(highlight) { append(shown.substring(hit, hit + q.length)) }
+                append(shown.substring(hit + q.length))
+            }
+        },
+        style = MaterialTheme.typography.bodySmall,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+    )
 }

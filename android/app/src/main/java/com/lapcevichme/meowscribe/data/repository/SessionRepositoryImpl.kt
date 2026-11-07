@@ -4,6 +4,7 @@ import com.lapcevichme.meowscribe.data.db.SessionDao
 import com.lapcevichme.meowscribe.data.db.SessionEntity
 import com.lapcevichme.meowscribe.data.db.SpeakerEntity
 import com.lapcevichme.meowscribe.data.db.UtteranceEntity
+import com.lapcevichme.meowscribe.domain.model.PipelineConfig
 import com.lapcevichme.meowscribe.domain.model.Session
 import com.lapcevichme.meowscribe.domain.model.SessionStatus
 import com.lapcevichme.meowscribe.domain.model.Utterance
@@ -31,13 +32,25 @@ class SessionRepositoryImpl @Inject constructor(
     override fun observeSpeakerNames(id: Long): Flow<Map<String, String>> =
         dao.observeSpeakers(id).map { list -> list.associate { it.speakerId to it.name } }
 
+    override fun searchTranscripts(query: String): Flow<Map<Long, String>> {
+        val q = query.trim().lowercase()
+        return dao.observeAllTexts().map { rows ->
+            if (q.isEmpty()) return@map emptyMap()
+            val result = LinkedHashMap<Long, String>()
+            for (row in rows) {
+                if (row.sessionId !in result && row.text.lowercase().contains(q)) result[row.sessionId] = row.text
+            }
+            result
+        }
+    }
+
     override suspend fun getSession(id: Long): Session? = dao.get(id)?.toDomain()
 
     override suspend fun getTranscript(id: Long): List<Utterance> = dao.getUtterances(id).map { it.toDomain() }
 
     override suspend fun pendingSessionIds(): List<Long> = dao.pendingIds()
 
-    override suspend fun createSession(title: String, audioUri: String, durationMs: Long?): Long =
+    override suspend fun createSession(title: String, audioUri: String, durationMs: Long?, config: PipelineConfig): Long =
         dao.insert(
             SessionEntity(
                 title = title,
@@ -45,6 +58,10 @@ class SessionRepositoryImpl @Inject constructor(
                 durationMs = durationMs,
                 createdAt = System.currentTimeMillis(),
                 status = SessionStatus.QUEUED,
+                profile = config.profile,
+                language = config.language,
+                numSpeakers = config.numSpeakers,
+                useLlm = config.useLlm,
             ),
         )
 
@@ -54,18 +71,22 @@ class SessionRepositoryImpl @Inject constructor(
     override suspend fun setDuration(id: Long, durationMs: Long) = dao.updateDuration(id, durationMs)
 
     override suspend fun saveResult(id: Long, utterances: List<Utterance>, processingMs: Long) {
-        val items = utterances.mapIndexed { i, u ->
-            UtteranceEntity(
-                sessionId = id,
-                idx = i,
-                speakerId = u.speakerId,
-                startMs = u.startMs,
-                endMs = u.endMs,
-                text = u.text,
-                wordsJson = json.encodeToString(u.words.map { WordDto(it.text, it.startMs, it.endMs) }),
-            )
-        }
-        dao.replaceResult(id, items, utterances.map { it.speakerId }.distinct().size, processingMs)
+        dao.replaceResult(id, utterances.toEntities(id), utterances.map { it.speakerId }.distinct().size, processingMs)
+    }
+
+    override suspend fun replaceTranscript(id: Long, utterances: List<Utterance>) =
+        dao.replaceUtterances(id, utterances.toEntities(id))
+
+    private fun List<Utterance>.toEntities(sessionId: Long) = mapIndexed { i, u ->
+        UtteranceEntity(
+            sessionId = sessionId,
+            idx = i,
+            speakerId = u.speakerId,
+            startMs = u.startMs,
+            endMs = u.endMs,
+            text = u.text,
+            wordsJson = json.encodeToString(u.words.map { WordDto(it.text, it.startMs, it.endMs) }),
+        )
     }
 
     override suspend fun updateUtterance(id: Long, index: Int, text: String, speakerId: String) =
@@ -92,6 +113,7 @@ class SessionRepositoryImpl @Inject constructor(
         processingMs = processingMs,
         errorMessage = errorMessage,
         summary = summary,
+        config = PipelineConfig(profile = profile, language = language, numSpeakers = numSpeakers, useLlm = useLlm),
     )
 
     private fun UtteranceEntity.toDomain() = Utterance(

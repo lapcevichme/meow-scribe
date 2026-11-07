@@ -4,6 +4,7 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.lapcevichme.meowscribe.domain.model.Profile
 import com.lapcevichme.meowscribe.domain.model.SessionStatus
 
 @Entity(tableName = "sessions")
@@ -18,6 +19,10 @@ data class SessionEntity(
     val processingMs: Long? = null,
     val errorMessage: String? = null,
     val summary: String? = null,
+    val profile: Profile = Profile.FAST,
+    val language: String = "ru",
+    val numSpeakers: Int? = null,
+    val useLlm: Boolean = true,
 )
 
 @Entity(
@@ -61,3 +66,6 @@ data class SpeakerEntity(
     val speakerId: String,
     val name: String,
 )
+
+/** Проекция для поиска по тексту расшифровок. */
+data class SessionText(val sessionId: Long, val text: String)

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -54,6 +55,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lapcevichme.meowscribe.R
 import com.lapcevichme.meowscribe.domain.model.ProcessingProgress
 import com.lapcevichme.meowscribe.domain.pipeline.Stage
+import com.lapcevichme.meowscribe.presentation.components.summary
 import com.lapcevichme.meowscribe.presentation.components.BackTopBar
 import com.lapcevichme.meowscribe.presentation.components.SpeakerShape
 import com.lapcevichme.meowscribe.presentation.components.formatDuration
@@ -108,6 +110,12 @@ private fun RunningContent(state: ProcessingUiState.Running) {
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(horizontal = 4.dp),
+        )
+        Text(
+            listOfNotNull(state.durationMs?.let(::formatDuration), state.config.summary()).joinToString(" · "),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 4.dp).offset(y = (-8).dp),
         )
         Hero(p, state.queued)
         StageList(p)

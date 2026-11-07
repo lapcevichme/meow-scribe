@@ -78,18 +78,19 @@ data/
 ├── pipeline/fake/           # FakePipeline — для разработки UI
 ├── pipeline/sherpa/         # SherpaPipeline: VAD, диаризация, ASR, склейка (oatis123)
 ├── llm/                     # обёртка llama.cpp (oatis123)
-├── audio/                   # декодер MediaCodec → 16 кГц моно float, запись с микрофона
+├── audio/                   # декодер MediaCodec → 16 кГц моно float, запись с микрофона в WAV
+├── settings/                # настройки обработки (SharedPreferences)
 ├── db/                      # Room
 ├── export/                  # JSON (строгая схема), TXT, SRT
 ├── models/                  # ModelLocator — пути к весам, копирование .gguf из assets
 ├── processing/              # ProcessingManager — очередь и прогресс
 └── repository/              # реализации интерфейсов domain
-service/                     # Foreground Service обработки
+service/                     # Foreground Service: обработка и запись с микрофона
 di/                          # Hilt-модули
 presentation/
 ├── components/              # общие composable: спикеры, форматтеры, топбар
 ├── theme/  navigation/
-└── feature/{home,processing,transcript}/
+└── feature/{home,processing,transcript,record,settings}/
 ```
 
 ### Владение кодом

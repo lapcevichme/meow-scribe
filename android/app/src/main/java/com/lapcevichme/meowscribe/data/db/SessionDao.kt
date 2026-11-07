@@ -74,6 +74,16 @@ interface SessionDao {
         markDone(sessionId, speakers, processingMs)
     }
 
+    @Query("SELECT sessionId, text FROM utterances ORDER BY sessionId, idx")
+    fun observeAllTexts(): Flow<List<SessionText>>
+
+    @Transaction
+    suspend fun replaceUtterances(sessionId: Long, items: List<UtteranceEntity>) {
+        deleteUtterances(sessionId)
+        insertUtterances(items)
+        updateSpeakerCount(sessionId, countSpeakers(sessionId))
+    }
+
     @Transaction
     suspend fun editUtterance(sessionId: Long, idx: Int, text: String, speakerId: String) {
         updateUtterance(sessionId, idx, text, speakerId)

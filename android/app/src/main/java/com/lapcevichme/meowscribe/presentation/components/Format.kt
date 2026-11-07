@@ -1,6 +1,8 @@
 package com.lapcevichme.meowscribe.presentation.components
 
 import android.text.format.DateUtils
+import com.lapcevichme.meowscribe.domain.model.PipelineConfig
+import com.lapcevichme.meowscribe.domain.model.Profile
 import java.util.Locale
 
 /** 75_000 → "1:15", 3_700_000 → "1:01:40". */
@@ -35,3 +37,21 @@ fun pluralSpeakers(n: Int): String {
     }
     return "$n $word"
 }
+
+fun Profile.label(): String = when (this) {
+    Profile.FAST -> "Быстрый"
+    Profile.ACCURATE -> "Точный"
+}
+
+fun languageLabel(code: String): String = when (code) {
+    "ru" -> "Русский"
+    "en" -> "English"
+    else -> "Авто"
+}
+
+/** «Профиль «Быстрый» · RU» — подпись под названием записи. */
+fun PipelineConfig.summary(): String = buildList {
+    add("Профиль «${profile.label()}»")
+    add(if (language == "auto") "язык авто" else language.uppercase())
+    numSpeakers?.let { add(pluralSpeakers(it)) }
+}.joinToString(" · ")

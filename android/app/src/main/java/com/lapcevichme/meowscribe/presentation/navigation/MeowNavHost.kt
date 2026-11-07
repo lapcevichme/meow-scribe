@@ -7,6 +7,8 @@ import androidx.navigation.compose.rememberNavController
 import com.lapcevichme.meowscribe.domain.model.SessionStatus
 import com.lapcevichme.meowscribe.presentation.feature.home.HomeScreen
 import com.lapcevichme.meowscribe.presentation.feature.processing.ProcessingScreen
+import com.lapcevichme.meowscribe.presentation.feature.record.RecordScreen
+import com.lapcevichme.meowscribe.presentation.feature.settings.SettingsScreen
 import com.lapcevichme.meowscribe.presentation.feature.transcript.TranscriptScreen
 
 @Composable
@@ -19,6 +21,8 @@ fun MeowNavHost() {
                     if (session.status == SessionStatus.DONE) nav.navigate(TranscriptRoute(session.id))
                     else nav.navigate(ProcessingRoute(session.id))
                 },
+                onRecord = { nav.navigate(RecordRoute) },
+                onSettings = { nav.navigate(SettingsRoute) },
             )
         }
         composable<ProcessingRoute> {
@@ -30,6 +34,20 @@ fun MeowNavHost() {
                     }
                 },
             )
+        }
+        composable<RecordRoute> {
+            RecordScreen(
+                onBack = { nav.popBackStack() },
+                onSaved = { id ->
+                    nav.navigate(ProcessingRoute(id)) {
+                        popUpTo<RecordRoute> { inclusive = true }
+                    }
+                },
+                onSettings = { nav.navigate(SettingsRoute) },
+            )
+        }
+        composable<SettingsRoute> {
+            SettingsScreen(onBack = { nav.popBackStack() })
         }
         composable<TranscriptRoute> {
             TranscriptScreen(onBack = { nav.popBackStack() })

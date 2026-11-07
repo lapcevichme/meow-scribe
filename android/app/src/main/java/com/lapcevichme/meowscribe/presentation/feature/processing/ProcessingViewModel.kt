@@ -4,6 +4,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.navigation.toRoute
+import com.lapcevichme.meowscribe.domain.model.PipelineConfig
 import com.lapcevichme.meowscribe.domain.model.ProcessingProgress
 import com.lapcevichme.meowscribe.domain.model.SessionStatus
 import com.lapcevichme.meowscribe.domain.processing.ProcessingQueue
@@ -24,6 +25,7 @@ sealed interface ProcessingUiState {
     data class Running(
         val title: String,
         val durationMs: Long?,
+        val config: PipelineConfig,
         val queued: Boolean,
         val progress: ProcessingProgress?,
     ) : ProcessingUiState
@@ -66,6 +68,7 @@ class ProcessingViewModel @Inject constructor(
             else -> ProcessingUiState.Running(
                 title = session.title,
                 durationMs = session.durationMs,
+                config = session.config,
                 queued = session.status == SessionStatus.QUEUED && progress == null,
                 progress = progress,
             )
