@@ -10,7 +10,7 @@ interface TranscriptExporter {
     suspend fun writeTo(targetUri: String, content: String)
 
     /** Сохранить в Загрузки/MeowScribe. Возвращает человекочитаемый путь или null при ошибке. */
-    suspend fun saveToDownloads(fileName: String, content: String): String?
+    suspend fun saveToDownloads(fileName: String, content: String, mimeType: String = "application/json"): String?
 
     /** Записать во временный файл для «Поделиться». Возвращает content:// uri. */
     suspend fun shareableUri(fileName: String, content: String): String

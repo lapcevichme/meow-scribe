@@ -48,6 +48,9 @@ class SessionRepositoryImpl @Inject constructor(
 
     override suspend fun getTranscript(id: Long): List<Utterance> = dao.getUtterances(id).map { it.toDomain() }
 
+    override suspend fun getSpeakerNames(id: Long): Map<String, String> =
+        dao.getSpeakers(id).associate { it.speakerId to it.name }
+
     override suspend fun pendingSessionIds(): List<Long> = dao.pendingIds()
 
     override suspend fun createSession(title: String, audioUri: String, durationMs: Long?, config: PipelineConfig): Long =

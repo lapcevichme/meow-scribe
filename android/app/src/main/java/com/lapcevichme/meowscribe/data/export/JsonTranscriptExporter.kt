@@ -1,5 +1,6 @@
 package com.lapcevichme.meowscribe.data.export
 
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
@@ -56,18 +57,34 @@ class JsonTranscriptExporter @Inject constructor(
         }
     }
 
-    override suspend fun saveToDownloads(fileName: String, content: String): String? = withContext(Dispatchers.IO) {
+    override suspend fun saveToDownloads(fileName: String, content: String, mimeType: String): String? = withContext(Dispatchers.IO) {
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val values = ContentValues().apply {
-                    put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-                    put(MediaStore.Downloads.MIME_TYPE, "application/json")
-                    put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/$DOWNLOADS_SUBDIR")
-                }
                 val resolver = context.contentResolver
-                val uri = requireNotNull(resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values))
-                resolver.openOutputStream(uri).use { requireNotNull(it).write(content.toByteArray(Charsets.UTF_8)) }
-                "${Environment.DIRECTORY_DOWNLOADS}/$DOWNLOADS_SUBDIR/$fileName"
+                val relativePath = "${Environment.DIRECTORY_DOWNLOADS}/$DOWNLOADS_SUBDIR/"
+                // Повторный экспорт той же записи перезаписывает наш файл, а не плодит «(1)», «(2)»…
+                val existing = resolver.query(
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                    arrayOf(MediaStore.Downloads._ID),
+                    "${MediaStore.Downloads.DISPLAY_NAME} = ? AND ${MediaStore.Downloads.RELATIVE_PATH} = ?",
+                    arrayOf(fileName, relativePath),
+                    null,
+                )?.use { c -> if (c.moveToFirst()) ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, c.getLong(0)) else null }
+                val uri = existing ?: requireNotNull(
+                    resolver.insert(
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                        ContentValues().apply {
+                            put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                            put(MediaStore.Downloads.MIME_TYPE, mimeType)
+                            put(MediaStore.Downloads.RELATIVE_PATH, relativePath)
+                        },
+                    ),
+                )
+                resolver.openOutputStream(uri, "wt").use { requireNotNull(it).write(content.toByteArray(Charsets.UTF_8)) }
+                // Имя могло измениться, если файл с таким же именем создало другое приложение.
+                val actualName = resolver.query(uri, arrayOf(MediaStore.Downloads.DISPLAY_NAME), null, null, null)
+                    ?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: fileName
+                "$relativePath$actualName"
             } else {
                 // Android 9: без разрешения на запись в общие папки — кладём в папку приложения.
                 val dir = File(context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), DOWNLOADS_SUBDIR).apply { mkdirs() }

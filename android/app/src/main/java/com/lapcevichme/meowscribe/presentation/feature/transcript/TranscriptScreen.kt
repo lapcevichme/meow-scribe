@@ -31,6 +31,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -42,9 +44,11 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.Switch
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingToolbarDefaults
 import androidx.compose.material3.HorizontalFloatingToolbar
@@ -76,6 +80,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -87,6 +92,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.TextRange
@@ -98,7 +104,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lapcevichme.meowscribe.R
 import com.lapcevichme.meowscribe.domain.model.SessionStatus
 import com.lapcevichme.meowscribe.domain.model.Utterance
-import com.lapcevichme.meowscribe.domain.usecase.ExportTranscriptUseCase
+import com.lapcevichme.meowscribe.domain.export.ExportFormat
+import com.lapcevichme.meowscribe.domain.export.ExportOptions
 import com.lapcevichme.meowscribe.domain.voice.VoiceMatch
 import com.lapcevichme.meowscribe.presentation.components.BackTopBar
 import com.lapcevichme.meowscribe.presentation.components.SpeakerAvatar
@@ -106,12 +113,15 @@ import com.lapcevichme.meowscribe.presentation.components.SpeakerShape
 import com.lapcevichme.meowscribe.presentation.components.SpeakerStyle
 import com.lapcevichme.meowscribe.presentation.components.defaultSpeakerName
 import com.lapcevichme.meowscribe.presentation.components.formatDuration
+import com.lapcevichme.meowscribe.presentation.components.formatFileSize
 import com.lapcevichme.meowscribe.presentation.components.formatRtf
+import com.lapcevichme.meowscribe.presentation.components.pluralRu
 import com.lapcevichme.meowscribe.presentation.components.pluralSpeakers
 import com.lapcevichme.meowscribe.presentation.components.speakerIndex
 import com.lapcevichme.meowscribe.presentation.components.speakerInitial
 import com.lapcevichme.meowscribe.presentation.components.speakerStyle
 import java.util.Locale
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 @Composable
@@ -125,16 +135,31 @@ fun TranscriptScreen(
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
 
+    var exportOpen by remember { mutableStateOf(false) }
+
     LaunchedEffect(Unit) {
         viewModel.events.collect { event ->
             when (event) {
-                is TranscriptEvent.Message -> snackbar.showSnackbar(event.text)
-                is TranscriptEvent.Share -> context.shareJson(event.uri)
+                is TranscriptEvent.Message -> {
+                    // Снекбар с действием живёт дольше, а новый сразу заменяет старый.
+                    snackbar.currentSnackbarData?.dismiss()
+                    launch {
+                        val result = snackbar.showSnackbar(event.text, actionLabel = event.action?.label, withDismissAction = event.action != null)
+                        if (result == SnackbarResult.ActionPerformed) event.action?.let(viewModel::onSnackAction)
+                    }
+                }
+                is TranscriptEvent.Share -> context.shareFile(event.uri, event.mimeType)
+                is TranscriptEvent.Copy -> {
+                    context.copyToClipboard(event.text)
+                    snackbar.currentSnackbarData?.dismiss()
+                    launch { snackbar.showSnackbar("Скопировано") }
+                }
             }
         }
     }
 
-    val saveAs = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+    // Тип файла выбирается по расширению в момент запуска: формат меняется в шторке.
+    val saveAs = rememberLauncherForActivityResult(CreateDocumentByExtension()) { uri ->
         uri?.let { viewModel.exportTo(it.toString()) }
     }
 
@@ -143,12 +168,7 @@ fun TranscriptScreen(
             BackTopBar(onBack = onBack) {
                 val content = state as? TranscriptUiState.Content
                 if (content != null) {
-                    ExportButton(
-                        onSaveAs = { saveAs.launch(ExportTranscriptUseCase.exportFileName(content.session.title)) },
-                        onDownloads = viewModel::exportToDownloads,
-                        onShare = viewModel::share,
-                        onCopyText = { context.copyToClipboard(plainText(content)) },
-                    )
+                    ExportButton(onQuickJson = viewModel::quickJson, onMore = { exportOpen = true })
                 }
             }
             when (val s = state) {
@@ -165,6 +185,7 @@ fun TranscriptScreen(
                     onRename = viewModel::renameSpeaker,
                     onEdit = viewModel::editUtterance,
                     onSplit = viewModel::split,
+                    onMerge = viewModel::merge,
                     onCopy = { context.copyToClipboard(it) },
                     modifier = Modifier.weight(1f),
                 )
@@ -186,6 +207,21 @@ fun TranscriptScreen(
             )
         }
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 96.dp))
+    }
+
+    if (exportOpen) {
+        val options by viewModel.exportOptions.collectAsStateWithLifecycle()
+        val preview by viewModel.exportPreview.collectAsStateWithLifecycle()
+        ExportSheet(
+            options = options,
+            preview = preview,
+            onOptions = viewModel::setExportOptions,
+            onDismiss = { exportOpen = false },
+            onShare = { viewModel.share(); exportOpen = false },
+            onDownloads = { viewModel.saveToDownloads(); exportOpen = false },
+            onSaveAs = { viewModel.exportFileName()?.let(saveAs::launch); exportOpen = false },
+            onCopy = { viewModel.copy(); exportOpen = false },
+        )
     }
 }
 
@@ -212,6 +248,7 @@ private fun TranscriptBody(
     onRename: (String, String?, Boolean) -> Unit,
     onEdit: (Int, String, String) -> Unit,
     onSplit: (Int, String, Int, String) -> Unit,
+    onMerge: (index: Int, withNext: Boolean, text: String, speakerId: String) -> Unit,
     onCopy: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -287,12 +324,15 @@ private fun TranscriptBody(
     editing?.let { index ->
         EditSheet(
             utterance = utterances[index],
+            previous = utterances.getOrNull(index - 1),
+            next = utterances.getOrNull(index + 1),
             speakerIds = content.speakerIds,
             nameOf = ::nameOf,
             onDismiss = { editing = null },
             onPlayFrom = { onSeek(utterances[index].startMs, true); editing = null },
             onSave = { text, speaker -> onEdit(index, text, speaker); editing = null },
             onSplit = { text, cursor, speaker -> onSplit(index, text, cursor, speaker); editing = null },
+            onMerge = { withNext, text, speaker -> onMerge(index, withNext, text, speaker); editing = null },
             onCopy = { onCopy(it); editing = null },
         )
     }
@@ -599,71 +639,260 @@ private fun SpeakerTimeline(
 // ---------------------------------------------------------------- export
 
 @Composable
-private fun ExportButton(
-    onSaveAs: () -> Unit,
-    onDownloads: () -> Unit,
+private fun ExportButton(onQuickJson: () -> Unit, onMore: () -> Unit) {
+    SplitButtonLayout(
+        leadingButton = {
+            SplitButtonDefaults.LeadingButton(onClick = onQuickJson) {
+                Icon(painterResource(R.drawable.ic_download), contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("JSON")
+            }
+        },
+        trailingButton = {
+            SplitButtonDefaults.TrailingButton(
+                checked = false,
+                onCheckedChange = { onMore() },
+                modifier = Modifier.semantics { contentDescription = "Другие форматы и способы экспорта" },
+            ) {
+                Icon(painterResource(R.drawable.ic_chevron_down), contentDescription = null, modifier = Modifier.size(18.dp))
+            }
+        },
+    )
+}
+
+// ---------------------------------------------------------------- export sheet
+
+private val ExportFormat.title get() = when (this) {
+    ExportFormat.JSON -> "JSON"
+    ExportFormat.TXT -> "Текст"
+    ExportFormat.SRT -> "Субтитры"
+}
+
+private val ExportFormat.caption get() = when (this) {
+    ExportFormat.JSON -> "для проверки"
+    ExportFormat.TXT -> "читать и пересылать"
+    ExportFormat.SRT -> "для видео"
+}
+
+private val ExportFormat.icon get() = when (this) {
+    ExportFormat.JSON -> R.drawable.ic_code
+    ExportFormat.TXT -> R.drawable.ic_text
+    ExportFormat.SRT -> R.drawable.ic_subtitles
+}
+
+private val ExportFormat.hint get() = when (this) {
+    ExportFormat.JSON -> "Строго по схеме конкурса: speaker_id, start_ms, end_ms, text. Имена спикеров в файл не попадают."
+    ExportFormat.TXT -> "Реплики с именами и тайм-кодами. Подряд идущие реплики одного человека собраны вместе."
+    ExportFormat.SRT -> "Открывается в любом видеоплеере. Длинные реплики разбиты на субтитры до двух строк."
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ExportSheet(
+    options: ExportOptions,
+    preview: ExportPreview?,
+    onOptions: (ExportOptions) -> Unit,
+    onDismiss: () -> Unit,
     onShare: () -> Unit,
-    onCopyText: () -> Unit,
+    onDownloads: () -> Unit,
+    onSaveAs: () -> Unit,
+    onCopy: () -> Unit,
 ) {
-    var menu by remember { mutableStateOf(false) }
-    Box {
-        SplitButtonLayout(
-            leadingButton = {
-                SplitButtonDefaults.LeadingButton(onClick = onSaveAs) {
-                    Icon(painterResource(R.drawable.ic_download), contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("JSON")
-                }
-            },
-            trailingButton = {
-                SplitButtonDefaults.TrailingButton(
-                    checked = menu,
-                    onCheckedChange = { menu = it },
-                    modifier = Modifier.semantics { contentDescription = "Другие варианты экспорта" },
-                ) {
-                    val rotation by animateFloatAsState(if (menu) 180f else 0f, label = "chevron")
-                    Icon(
-                        painterResource(R.drawable.ic_chevron_down),
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = rotation },
+    val cs = MaterialTheme.colorScheme
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text("Экспорт", style = MaterialTheme.typography.headlineSmallEmphasized, modifier = Modifier.padding(start = 4.dp))
+
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ExportFormat.entries.forEach { format ->
+                    FormatCard(
+                        format = format,
+                        selected = options.format == format,
+                        onClick = { onOptions(options.copy(format = format)) },
+                        modifier = Modifier.weight(1f),
                     )
                 }
-            },
-        )
-        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-            DropdownMenuItem(
-                text = { Text("В «Загрузки»") },
-                leadingIcon = { Icon(painterResource(R.drawable.ic_download), null) },
-                onClick = { menu = false; onDownloads() },
+            }
+            Text(
+                options.format.hint,
+                style = MaterialTheme.typography.bodyMedium,
+                color = cs.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp),
             )
-            DropdownMenuItem(
-                text = { Text("Поделиться") },
-                leadingIcon = { Icon(painterResource(R.drawable.ic_share), null) },
-                onClick = { menu = false; onShare() },
-            )
-            DropdownMenuItem(
-                text = { Text("Копировать текст") },
-                leadingIcon = { Icon(painterResource(R.drawable.ic_copy), null) },
-                onClick = { menu = false; onCopyText() },
+
+            if (options.format != ExportFormat.JSON) {
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))) {
+                    OptionRow(
+                        title = "Имена спикеров",
+                        subtitle = if (options.speakerNames) "Как в приложении: «Анна», «Спикер 2»" else "Технические: speaker_1, speaker_2",
+                        checked = options.speakerNames,
+                        onChange = { onOptions(options.copy(speakerNames = it)) },
+                    )
+                    if (options.format == ExportFormat.TXT) {
+                        OptionRow(
+                            title = "Тайм-коды",
+                            subtitle = "[01:23] перед каждой сменой говорящего",
+                            checked = options.timestamps,
+                            onChange = { onOptions(options.copy(timestamps = it)) },
+                        )
+                    }
+                }
+            }
+
+            PreviewCard(preview)
+
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onShare, modifier = Modifier.weight(1f).heightIn(min = 52.dp)) {
+                    Icon(painterResource(R.drawable.ic_share), contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Поделиться")
+                }
+                FilledTonalButton(onClick = onDownloads, modifier = Modifier.weight(1f).heightIn(min = 52.dp)) {
+                    Icon(painterResource(R.drawable.ic_download), contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("В Загрузки")
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onSaveAs, modifier = Modifier.weight(1f)) {
+                    Icon(painterResource(R.drawable.ic_folder), contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Сохранить как…", maxLines = 1)
+                }
+                OutlinedButton(onClick = onCopy, modifier = Modifier.weight(1f)) {
+                    Icon(painterResource(R.drawable.ic_copy), contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Копировать", maxLines = 1)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FormatCard(format: ExportFormat, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val cs = MaterialTheme.colorScheme
+    val container by animateColorAsState(if (selected) cs.primaryContainer else cs.surfaceContainerHigh, label = "formatBg")
+    val content by animateColorAsState(if (selected) cs.onPrimaryContainer else cs.onSurface, label = "formatFg")
+    val corner by animateDpAsState(if (selected) 28.dp else 16.dp, label = "formatCorner")
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(corner),
+        color = container,
+        contentColor = content,
+        border = if (selected) BorderStroke(2.dp, cs.primary) else null,
+        modifier = modifier.semantics { contentDescription = "${format.title}, ${format.caption}" + if (selected) ", выбран" else "" },
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Icon(painterResource(format.icon), contentDescription = null, modifier = Modifier.size(24.dp))
+            Text(format.title, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+            Text(
+                ".${format.extension} · ${format.caption}",
+                style = MaterialTheme.typography.bodySmall,
+                color = content.copy(alpha = 0.75f),
+                minLines = 2,
+                maxLines = 2,
             )
         }
     }
 }
 
-private fun plainText(content: TranscriptUiState.Content): String =
-    content.utterances.joinToString("\n") { u ->
-        val name = content.speakerNames[u.speakerId] ?: defaultSpeakerName(u.speakerId)
-        "[${formatDuration(u.startMs)}] $name: ${u.text}"
+@Composable
+private fun OptionRow(title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 1.dp)
+            .toggleable(value = checked, role = Role.Switch, onValueChange = onChange),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.bodyLarge)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Switch(checked = checked, onCheckedChange = null)
+        }
     }
+}
+
+@Composable
+private fun PreviewCard(preview: ExportPreview?) {
+    val cs = MaterialTheme.colorScheme
+    Surface(color = cs.surfaceContainerHighest, shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Предпросмотр", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                preview?.let {
+                    val count = if (it.document.mimeType == ExportFormat.SRT.mimeType) {
+                        pluralRu(it.document.items, "субтитр", "субтитра", "субтитров")
+                    } else {
+                        pluralRu(it.document.items, "реплика", "реплики", "реплик")
+                    }
+                    Text(
+                        "$count · ${formatFileSize(it.sizeBytes.toLong())}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = cs.onSurfaceVariant,
+                    )
+                }
+            }
+            preview?.let {
+                Text(
+                    it.document.fileName,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = cs.primary,
+                    maxLines = 1,
+                )
+            }
+            Box(Modifier.fillMaxWidth().heightIn(min = 120.dp)) {
+                Text(
+                    preview?.head ?: "",
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = cs.onSurface,
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    softWrap = false,
+                )
+                if (preview?.truncated == true) {
+                    Box(
+                        Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .background(Brush.verticalGradient(listOf(Color.Transparent, cs.surfaceContainerHighest))),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** CreateDocument, у которого MIME берётся из расширения имени файла в момент запуска. */
+private class CreateDocumentByExtension : ActivityResultContracts.CreateDocument("application/octet-stream") {
+    override fun createIntent(context: Context, input: String): Intent {
+        val format = ExportFormat.entries.firstOrNull { input.endsWith(".${it.extension}") } ?: ExportFormat.JSON
+        return super.createIntent(context, input).setType(format.mimeType)
+    }
+}
 
 private fun Context.copyToClipboard(text: String) {
     val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     cm.setPrimaryClip(ClipData.newPlainText("MeowScribe", text))
 }
 
-private fun Context.shareJson(uri: String) {
+private fun Context.shareFile(uri: String, mimeType: String) {
     val send = Intent(Intent.ACTION_SEND)
-        .setType("application/json")
+        .setType(mimeType)
         .putExtra(Intent.EXTRA_STREAM, Uri.parse(uri))
         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     startActivity(Intent.createChooser(send, "Поделиться расшифровкой"))
@@ -745,12 +974,15 @@ private fun RenameDialog(
 @Composable
 private fun EditSheet(
     utterance: Utterance,
+    previous: Utterance?,
+    next: Utterance?,
     speakerIds: List<String>,
     nameOf: (String) -> String,
     onDismiss: () -> Unit,
     onPlayFrom: () -> Unit,
     onSave: (String, String) -> Unit,
     onSplit: (String, Int, String) -> Unit,
+    onMerge: (withNext: Boolean, text: String, speakerId: String) -> Unit,
     onCopy: (String) -> Unit,
 ) {
     var field by remember(utterance) { mutableStateOf(TextFieldValue(utterance.text, TextRange(utterance.text.length))) }
@@ -803,9 +1035,16 @@ private fun EditSheet(
                             else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
                         },
                     ) {
-                        if (!isNew) {
-                            SpeakerShape(speakerStyle(speakerIndex(id)), size = 18.dp)
-                            Spacer(Modifier.width(6.dp))
+                        when {
+                            // У выбранной кнопки фон primary — аватар первого спикера того же цвета и пропадает.
+                            speaker == id -> {
+                                Icon(painterResource(R.drawable.ic_check), contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                            }
+                            !isNew -> {
+                                SpeakerShape(speakerStyle(speakerIndex(id)), size = 18.dp)
+                                Spacer(Modifier.width(6.dp))
+                            }
                         }
                         Text(if (isNew) "Новый" else nameOf(id), maxLines = 1)
                     }
@@ -819,6 +1058,23 @@ private fun EditSheet(
                     enabled = canSplit,
                     onClick = { onSplit(text, cursor, speaker) },
                 )
+                previous?.let { p ->
+                    SheetAction(
+                        R.drawable.ic_merge,
+                        "Склеить с предыдущей",
+                        subtitle = "${nameOf(p.speakerId)}: «${p.text.ellipsize(48)}»",
+                        iconRotation = 180f,
+                        onClick = { onMerge(false, text, speaker) },
+                    )
+                }
+                next?.let { n ->
+                    SheetAction(
+                        R.drawable.ic_merge,
+                        "Склеить со следующей",
+                        subtitle = "${nameOf(n.speakerId)}: «${n.text.ellipsize(48)}»",
+                        onClick = { onMerge(true, text, speaker) },
+                    )
+                }
                 SheetAction(R.drawable.ic_copy, "Копировать текст", onClick = { onCopy(text) })
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
@@ -833,7 +1089,14 @@ private fun EditSheet(
 }
 
 @Composable
-private fun SheetAction(icon: Int, label: String, enabled: Boolean = true, onClick: () -> Unit) {
+private fun SheetAction(
+    icon: Int,
+    label: String,
+    enabled: Boolean = true,
+    subtitle: String? = null,
+    iconRotation: Float = 0f,
+    onClick: () -> Unit,
+) {
     val cs = MaterialTheme.colorScheme
     Surface(
         onClick = onClick,
@@ -847,8 +1110,18 @@ private fun SheetAction(icon: Int, label: String, enabled: Boolean = true, onCli
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             val tint = if (enabled) cs.onSurface else cs.onSurface.copy(alpha = 0.38f)
-            Icon(painterResource(icon), contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
-            Text(label, style = MaterialTheme.typography.bodyLarge, color = tint)
+            Icon(
+                painterResource(icon),
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(20.dp).graphicsLayer { rotationZ = iconRotation },
+            )
+            Column {
+                Text(label, style = MaterialTheme.typography.bodyLarge, color = tint)
+                subtitle?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 1)
+                }
+            }
         }
     }
 }
@@ -861,3 +1134,5 @@ private fun CenterText(text: String) {
 }
 
 private fun similarityPercent(similarity: Float): Int = (similarity * 100).roundToInt().coerceIn(0, 100)
+
+private fun String.ellipsize(max: Int): String = trim().let { if (it.length <= max) it else it.take(max - 1).trimEnd() + "…" }

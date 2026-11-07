@@ -22,6 +22,7 @@ interface SessionRepository {
 
     suspend fun getSession(id: Long): Session?
     suspend fun getTranscript(id: Long): List<Utterance>
+    suspend fun getSpeakerNames(id: Long): Map<String, String>
     suspend fun pendingSessionIds(): List<Long>
 
     suspend fun createSession(title: String, audioUri: String, durationMs: Long?, config: PipelineConfig): Long

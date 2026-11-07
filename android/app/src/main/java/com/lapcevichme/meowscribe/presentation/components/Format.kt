@@ -55,3 +55,21 @@ fun PipelineConfig.summary(): String = buildList {
     add(if (language == "auto") "язык авто" else language.uppercase())
     numSpeakers?.let { add(pluralSpeakers(it)) }
 }.joinToString(" · ")
+
+fun formatFileSize(bytes: Long): String = when {
+    bytes < 1024 -> "$bytes Б"
+    bytes < 1024 * 1024 -> "%.1f КБ".format(bytes / 1024f)
+    else -> "%.1f МБ".format(bytes / 1048576f)
+}
+
+/** «1 реплика», «3 реплики», «7 реплик». */
+fun pluralRu(n: Int, one: String, few: String, many: String): String {
+    val mod10 = n % 10
+    val mod100 = n % 100
+    val word = when {
+        mod10 == 1 && mod100 != 11 -> one
+        mod10 in 2..4 && mod100 !in 12..14 -> few
+        else -> many
+    }
+    return "$n $word"
+}

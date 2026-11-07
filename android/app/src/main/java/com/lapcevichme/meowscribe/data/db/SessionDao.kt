@@ -61,6 +61,9 @@ interface SessionDao {
     @Query("SELECT * FROM speakers WHERE sessionId = :sessionId")
     fun observeSpeakers(sessionId: Long): Flow<List<SpeakerEntity>>
 
+    @Query("SELECT * FROM speakers WHERE sessionId = :sessionId")
+    suspend fun getSpeakers(sessionId: Long): List<SpeakerEntity>
+
     @Upsert
     suspend fun upsertSpeaker(speaker: SpeakerEntity)
 

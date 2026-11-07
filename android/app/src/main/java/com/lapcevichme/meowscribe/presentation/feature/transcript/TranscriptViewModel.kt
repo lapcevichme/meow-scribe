@@ -9,6 +9,9 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.navigation.toRoute
+import com.lapcevichme.meowscribe.domain.export.ExportDocument
+import com.lapcevichme.meowscribe.domain.export.ExportFormat
+import com.lapcevichme.meowscribe.domain.export.ExportOptions
 import com.lapcevichme.meowscribe.domain.model.Session
 import com.lapcevichme.meowscribe.domain.model.SessionStatus
 import com.lapcevichme.meowscribe.domain.model.Utterance
@@ -16,6 +19,7 @@ import com.lapcevichme.meowscribe.domain.repository.SessionRepository
 import com.lapcevichme.meowscribe.domain.repository.SpeakerEmbedder
 import com.lapcevichme.meowscribe.domain.repository.VoiceProfileRepository
 import com.lapcevichme.meowscribe.domain.usecase.ExportTranscriptUseCase
+import com.lapcevichme.meowscribe.domain.usecase.MergeUtterancesUseCase
 import com.lapcevichme.meowscribe.domain.usecase.RememberVoiceUseCase
 import com.lapcevichme.meowscribe.domain.usecase.SplitUtteranceUseCase
 import com.lapcevichme.meowscribe.domain.voice.VoiceMatch
@@ -24,6 +28,8 @@ import com.lapcevichme.meowscribe.presentation.navigation.TranscriptRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -32,6 +38,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -64,10 +72,26 @@ data class PlayerUiState(
     val speed: Float = 1f,
 )
 
-sealed interface TranscriptEvent {
-    data class Message(val text: String) : TranscriptEvent
-    data class Share(val uri: String) : TranscriptEvent
+/** Действие в снекбаре. */
+enum class SnackAction(val label: String) {
+    UNDO("Отменить"),
+    SHARE("Поделиться"),
 }
+
+sealed interface TranscriptEvent {
+    data class Message(val text: String, val action: SnackAction? = null) : TranscriptEvent
+    data class Share(val uri: String, val mimeType: String) : TranscriptEvent
+    data class Copy(val text: String) : TranscriptEvent
+}
+
+/** Что показываем в шторке экспорта. */
+data class ExportPreview(
+    val document: ExportDocument,
+    /** Первые строки файла. */
+    val head: String,
+    val truncated: Boolean,
+    val sizeBytes: Int,
+)
 
 @HiltViewModel
 class TranscriptViewModel @Inject constructor(
@@ -76,6 +100,7 @@ class TranscriptViewModel @Inject constructor(
     private val repository: SessionRepository,
     private val export: ExportTranscriptUseCase,
     private val splitUtterance: SplitUtteranceUseCase,
+    private val mergeUtterances: MergeUtterancesUseCase,
     private val rememberVoice: RememberVoiceUseCase,
     private val voiceRepository: VoiceProfileRepository,
     embedder: SpeakerEmbedder,
@@ -104,6 +129,32 @@ class TranscriptViewModel @Inject constructor(
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TranscriptUiState.Loading)
+
+    private val _exportOptions = MutableStateFlow(ExportOptions())
+    val exportOptions: StateFlow<ExportOptions> = _exportOptions.asStateFlow()
+
+    /** Предпросмотр считается, только пока шторка экспорта открыта и подписана. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val exportPreview: StateFlow<ExportPreview?> = combine(state, _exportOptions) { s, o -> s to o }
+        .mapLatest { (s, options) ->
+            val content = s as? TranscriptUiState.Content ?: return@mapLatest null
+            val doc = export.render(content.session, content.utterances, content.speakerNames, options)
+            val lines = doc.content.lineSequence().take(PREVIEW_LINES + 1).toList()
+            ExportPreview(
+                document = doc,
+                head = lines.take(PREVIEW_LINES).joinToString("\n").trimEnd(),
+                truncated = lines.size > PREVIEW_LINES,
+                sizeBytes = doc.content.toByteArray(Charsets.UTF_8).size,
+            )
+        }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(1_000), null)
+
+    /** Последний сохранённый файл — для «Поделиться» из снекбара. */
+    private var lastExport: ExportDocument? = null
+
+    /** Расшифровка до последнего разделения или склейки — для «Отменить». */
+    private var undoSnapshot: List<Utterance>? = null
 
     /** Спикер, чей голос сейчас запоминается (декодирование + эмбеддинг, несколько секунд). */
     private val _voiceBusy = MutableStateFlow<String?>(null)
@@ -227,26 +278,99 @@ class TranscriptViewModel @Inject constructor(
 
     fun split(index: Int, text: String, cursor: Int, speakerId: String) {
         viewModelScope.launch {
+            val before = repository.getTranscript(sessionId)
             val ok = splitUtterance(sessionId, index, text.trim(), cursor, speakerId)
-            _events.send(TranscriptEvent.Message(if (ok) "Реплика разделена" else "Поставьте курсор внутрь текста"))
+            if (ok) undoSnapshot = before
+            _events.send(
+                if (ok) TranscriptEvent.Message("Реплика разделена", SnackAction.UNDO)
+                else TranscriptEvent.Message("Поставьте курсор внутрь текста"),
+            )
         }
     }
 
-    fun exportTo(uri: String) = launchExport("Сохранено") { export.toUri(sessionId, uri) }
-
-    fun exportToDownloads() = launchExport(null) {
-        val path = export.toDownloads(sessionId)
-        _events.send(TranscriptEvent.Message(path?.let { "Сохранено: $it" } ?: "Не удалось сохранить"))
-    }
-
-    fun share() = launchExport(null) { _events.send(TranscriptEvent.Share(export.shareUri(sessionId))) }
-
-    private fun launchExport(successMessage: String?, block: suspend () -> Unit) {
+    fun merge(index: Int, withNext: Boolean, text: String, speakerId: String) {
         viewModelScope.launch {
-            runCatching { block() }
-                .onSuccess { successMessage?.let { _events.send(TranscriptEvent.Message(it)) } }
-                .onFailure { _events.send(TranscriptEvent.Message("Ошибка экспорта: ${it.message}")) }
+            val before = repository.getTranscript(sessionId)
+            if (mergeUtterances(sessionId, index, withNext, text, speakerId)) {
+                undoSnapshot = before
+                _events.send(TranscriptEvent.Message("Реплики склеены", SnackAction.UNDO))
+            }
         }
+    }
+
+    fun onSnackAction(action: SnackAction) {
+        when (action) {
+            SnackAction.UNDO -> undo()
+            SnackAction.SHARE -> lastExport?.let { doc -> launchExport { shareDocument(doc) } }
+        }
+    }
+
+    private fun undo() {
+        val snapshot = undoSnapshot ?: return
+        undoSnapshot = null
+        viewModelScope.launch {
+            repository.replaceTranscript(sessionId, snapshot)
+            _events.send(TranscriptEvent.Message("Отменено"))
+        }
+    }
+
+    // ------------------------------------------------------------ экспорт
+
+    fun setExportOptions(options: ExportOptions) {
+        _exportOptions.value = options
+    }
+
+    /** Имя файла для «Сохранить как…» по текущим настройкам. */
+    fun exportFileName(): String? = (state.value as? TranscriptUiState.Content)?.let {
+        ExportTranscriptUseCase.exportFileName(it.session.title, _exportOptions.value.format)
+    }
+
+    /** Кнопка «JSON» в шапке: один тап — файл по схеме в Загрузках. */
+    fun quickJson() = saveToDownloads(ExportOptions(format = ExportFormat.JSON))
+
+    fun saveToDownloads(options: ExportOptions = _exportOptions.value) = launchExport {
+        val doc = export.render(sessionId, options)
+        val path = export.toDownloads(doc)
+        if (path != null) {
+            lastExport = doc
+            _events.send(TranscriptEvent.Message("Сохранено в $path", SnackAction.SHARE))
+        } else {
+            _events.send(TranscriptEvent.Message("Не удалось сохранить файл"))
+        }
+    }
+
+    fun exportTo(uri: String) = launchExport {
+        export.toUri(export.render(sessionId, _exportOptions.value), uri)
+        _events.send(TranscriptEvent.Message("Файл сохранён"))
+    }
+
+    fun share() = launchExport { shareDocument(export.render(sessionId, _exportOptions.value)) }
+
+    fun copy() = launchExport {
+        val doc = export.render(sessionId, _exportOptions.value)
+        _events.send(TranscriptEvent.Copy(doc.content))
+    }
+
+    private suspend fun shareDocument(doc: ExportDocument) {
+        // SRT как text/plain: application/x-subrip понимают немногие приложения в списке «Поделиться».
+        val mime = if (doc.mimeType == ExportFormat.SRT.mimeType) "text/plain" else doc.mimeType
+        _events.send(TranscriptEvent.Share(export.shareUri(doc), mime))
+    }
+
+    private fun launchExport(block: suspend () -> Unit) {
+        viewModelScope.launch {
+            try {
+                block()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _events.send(TranscriptEvent.Message("Ошибка экспорта: ${e.message}"))
+            }
+        }
+    }
+
+    private companion object {
+        const val PREVIEW_LINES = 14
     }
 
     override fun onCleared() {
