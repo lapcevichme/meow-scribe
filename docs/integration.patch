@@ -1,0 +1,161 @@
+diff --git a/android/app/build.gradle.kts b/android/app/build.gradle.kts
+index 3dccac7..d9aeab7 100644
+--- a/android/app/build.gradle.kts
++++ b/android/app/build.gradle.kts
+@@ -8,6 +8,7 @@ plugins {
+ 
+ android {
+     namespace = "com.lapcevichme.meowscribe"
++    ndkVersion = "29.0.14206865"
+     compileSdk {
+         version = release(37)
+     }
+@@ -22,6 +23,13 @@ android {
+         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+     }
+ 
++    externalNativeBuild {
++        cmake {
++            path = file("src/main/cpp/CMakeLists.txt")
++            version = "3.31.6"
++        }
++    }
++
+     androidResources { noCompress += listOf("onnx", "gguf", "bin", "txt") }
+ 
+     buildTypes {
+@@ -70,4 +78,6 @@ dependencies {
+     ksp(libs.androidx.room.compiler)
+     implementation(libs.androidx.graphics.shapes)
+     implementation(libs.kotlinx.serialization.json)
++    // sherpa-onnx (VAD, диаризация, ASR): AAR кладёт bench/fetch_models.sh
++    implementation(files("libs/sherpa-onnx-2.0.1.aar"))
+ }
+\ No newline at end of file
+diff --git a/android/app/src/main/java/com/lapcevichme/meowscribe/data/db/SessionDao.kt b/android/app/src/main/java/com/lapcevichme/meowscribe/data/db/SessionDao.kt
+index 01cfe48..44a27f2 100644
+--- a/android/app/src/main/java/com/lapcevichme/meowscribe/data/db/SessionDao.kt
++++ b/android/app/src/main/java/com/lapcevichme/meowscribe/data/db/SessionDao.kt
+@@ -34,6 +34,9 @@ interface SessionDao {
+     @Query("UPDATE sessions SET status = 'DONE', errorMessage = NULL, speakerCount = :speakers, processingMs = :processingMs WHERE id = :id")
+     suspend fun markDone(id: Long, speakers: Int, processingMs: Long)
+ 
++    @Query("UPDATE sessions SET summary = :summary WHERE id = :id")
++    suspend fun updateSummary(id: Long, summary: String?)
++
+     @Query("UPDATE sessions SET speakerCount = :speakers WHERE id = :id")
+     suspend fun updateSpeakerCount(id: Long, speakers: Int)
+ 
+diff --git a/android/app/src/main/java/com/lapcevichme/meowscribe/data/processing/ProcessingManager.kt b/android/app/src/main/java/com/lapcevichme/meowscribe/data/processing/ProcessingManager.kt
+index 0822eb9..6018cbc 100644
+--- a/android/app/src/main/java/com/lapcevichme/meowscribe/data/processing/ProcessingManager.kt
++++ b/android/app/src/main/java/com/lapcevichme/meowscribe/data/processing/ProcessingManager.kt
+@@ -2,9 +2,11 @@ package com.lapcevichme.meowscribe.data.processing
+ 
+ import android.content.Context
+ import android.os.SystemClock
++import com.lapcevichme.meowscribe.data.llm.LlmSummarizer
+ import com.lapcevichme.meowscribe.domain.model.PipelineConfig
+ import com.lapcevichme.meowscribe.domain.model.ProcessingProgress
+ import com.lapcevichme.meowscribe.domain.model.SessionStatus
++import com.lapcevichme.meowscribe.domain.model.Utterance
+ import com.lapcevichme.meowscribe.domain.pipeline.PipelineEvent
+ import com.lapcevichme.meowscribe.domain.pipeline.Stage
+ import com.lapcevichme.meowscribe.domain.pipeline.TranscriptionPipeline
+@@ -44,6 +46,7 @@ class ProcessingManager @Inject constructor(
+     private val audioSource: AudioSource,
+     private val pipeline: TranscriptionPipeline,
+     private val exporter: TranscriptExporter,
++    private val summarizer: LlmSummarizer,
+ ) : ProcessingQueue {
+ 
+     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+@@ -110,7 +113,7 @@ class ProcessingManager @Inject constructor(
+         val stageTimes = mutableMapOf<Stage, Long>()
+         var stageStarted = started
+         var lastStage = Stage.DECODE
+-        var partial = emptyList<com.lapcevichme.meowscribe.domain.model.Utterance>()
++        var partial = emptyList<Utterance>()
+         var audioMs: Long? = null
+         var peakRam = 0L
+ 
+@@ -156,6 +159,8 @@ class ProcessingManager @Inject constructor(
+                         val total = SystemClock.elapsedRealtime() - started
+                         repository.saveResult(id, event.utterances, total)
+                         autoExport(id)
++                        // LLM — уже после сохранения и экспорта: на время до результата не влияет
++                        if (config.useLlm) summarize(id, event.utterances) { f -> publish(Stage.LLM, f, "Готовим сводку") }
+                     }
+                     is PipelineEvent.Failed -> throw event.error
+                 }
+@@ -167,6 +172,22 @@ class ProcessingManager @Inject constructor(
+         }
+     }
+ 
++    private suspend fun summarize(id: Long, utterances: List<Utterance>, onProgress: (Float) -> Unit) {
++        if (!summarizer.isAvailable()) return
++        try {
++            val s = summarizer.summarize(utterances, onProgress) ?: return
++            val text = buildString {
++                append(s.title)
++                s.bullets.forEach { append("\n• ").append(it) }
++            }
++            repository.setSummary(id, text)
++        } catch (e: CancellationException) {
++            throw e
++        } catch (e: Throwable) {
++            android.util.Log.w("ProcessingManager", "summary failed", e)
++        }
++    }
++
+     private suspend fun autoExport(id: Long) {
+         runCatching {
+             val title = repository.getSession(id)?.title ?: return
+diff --git a/android/app/src/main/java/com/lapcevichme/meowscribe/data/repository/SessionRepositoryImpl.kt b/android/app/src/main/java/com/lapcevichme/meowscribe/data/repository/SessionRepositoryImpl.kt
+index c071dfc..10c75cb 100644
+--- a/android/app/src/main/java/com/lapcevichme/meowscribe/data/repository/SessionRepositoryImpl.kt
++++ b/android/app/src/main/java/com/lapcevichme/meowscribe/data/repository/SessionRepositoryImpl.kt
+@@ -74,6 +74,8 @@ class SessionRepositoryImpl @Inject constructor(
+         dao.replaceResult(id, utterances.toEntities(id), utterances.map { it.speakerId }.distinct().size, processingMs)
+     }
+ 
++    override suspend fun setSummary(id: Long, summary: String?) = dao.updateSummary(id, summary)
++
+     override suspend fun replaceTranscript(id: Long, utterances: List<Utterance>) =
+         dao.replaceUtterances(id, utterances.toEntities(id))
+ 
+diff --git a/android/app/src/main/java/com/lapcevichme/meowscribe/di/PipelineModule.kt b/android/app/src/main/java/com/lapcevichme/meowscribe/di/PipelineModule.kt
+index 83b0873..50c3d0c 100644
+--- a/android/app/src/main/java/com/lapcevichme/meowscribe/di/PipelineModule.kt
++++ b/android/app/src/main/java/com/lapcevichme/meowscribe/di/PipelineModule.kt
+@@ -1,6 +1,6 @@
+ package com.lapcevichme.meowscribe.di
+ 
+-import com.lapcevichme.meowscribe.data.pipeline.fake.FakePipeline
++import com.lapcevichme.meowscribe.data.pipeline.sherpa.SherpaPipeline
+ import com.lapcevichme.meowscribe.domain.pipeline.TranscriptionPipeline
+ import dagger.Module
+ import dagger.Provides
+@@ -12,8 +12,8 @@ import javax.inject.Singleton
+ @InstallIn(SingletonComponent::class)
+ object PipelineModule {
+ 
+-    /** Точка переключения: FakePipeline → SherpaPipeline, когда он будет готов. */
++    /** Точка переключения: FakePipeline (UI без моделей) ↔ SherpaPipeline (настоящий инференс). */
+     @Provides
+     @Singleton
+-    fun provideTranscriptionPipeline(): TranscriptionPipeline = FakePipeline()
++    fun provideTranscriptionPipeline(impl: SherpaPipeline): TranscriptionPipeline = impl
+ }
+diff --git a/android/app/src/main/java/com/lapcevichme/meowscribe/domain/repository/SessionRepository.kt b/android/app/src/main/java/com/lapcevichme/meowscribe/domain/repository/SessionRepository.kt
+index 5c47398..24ac1ed 100644
+--- a/android/app/src/main/java/com/lapcevichme/meowscribe/domain/repository/SessionRepository.kt
++++ b/android/app/src/main/java/com/lapcevichme/meowscribe/domain/repository/SessionRepository.kt
+@@ -28,6 +28,7 @@ interface SessionRepository {
+     suspend fun setStatus(id: Long, status: SessionStatus, errorMessage: String? = null)
+     suspend fun setDuration(id: Long, durationMs: Long)
+     suspend fun saveResult(id: Long, utterances: List<Utterance>, processingMs: Long)
++    suspend fun setSummary(id: Long, summary: String?)
+ 
+     suspend fun updateUtterance(id: Long, index: Int, text: String, speakerId: String)
+     /** Полностью заменяет реплики записи (разделение, слияние). */

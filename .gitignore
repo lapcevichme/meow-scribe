@@ -1,1 +1,7 @@
 /.models-cache/
+bench/.cache/
+bench/out/
+bench/data/
+__pycache__/
+*.pyc
+.venv/
