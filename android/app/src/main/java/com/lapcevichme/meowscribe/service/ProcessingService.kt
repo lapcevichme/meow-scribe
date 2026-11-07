@@ -18,7 +18,11 @@ import com.lapcevichme.meowscribe.R
 import com.lapcevichme.meowscribe.domain.pipeline.Stage
 import com.lapcevichme.meowscribe.domain.processing.ProcessingQueue
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -34,10 +38,15 @@ class ProcessingService : LifecycleService() {
         startInForeground(buildNotification(null, 0f))
 
         lifecycleScope.launch {
-            queue.progress.collect { map ->
-                val p = map.values.firstOrNull()
-                notificationManager().notify(NOTIFICATION_ID, buildNotification(p?.stage, p?.overallFraction ?: 0f))
-            }
+            // Прогресс приходит десятки раз в секунду, а система режет уведомления чаще ~5/с.
+            queue.progress
+                .map { map -> map.values.firstOrNull().let { it?.stage to ((it?.overallFraction ?: 0f) * 100).toInt() } }
+                .distinctUntilChanged()
+                .conflate()
+                .collect { (stage, percent) ->
+                    notificationManager().notify(NOTIFICATION_ID, buildNotification(stage, percent / 100f))
+                    delay(NOTIFY_INTERVAL_MS)
+                }
         }
         lifecycleScope.launch {
             queue.busy.first { !it }
@@ -103,6 +112,7 @@ class ProcessingService : LifecycleService() {
     companion object {
         private const val CHANNEL_ID = "processing"
         private const val NOTIFICATION_ID = 42
+        private const val NOTIFY_INTERVAL_MS = 500L
 
         fun start(context: Context) {
             runCatching {

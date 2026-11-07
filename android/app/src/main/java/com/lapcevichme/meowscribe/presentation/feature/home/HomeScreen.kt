@@ -159,7 +159,8 @@ private fun HomeContent(
     var pendingDelete by remember { mutableStateOf<Session?>(null) }
     BackHandler(fabExpanded) { fabExpanded = false }
 
-    Scaffold(snackbarHost = { SnackbarHost(snackbar) }) { padding ->
+    // Снекбар поднят над FAB-меню: оно лежит не в слоте Scaffold, и иначе перекрывается.
+    Scaffold(snackbarHost = { SnackbarHost(snackbar, Modifier.padding(bottom = 88.dp)) }) { padding ->
         Box(Modifier.fillMaxSize()) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),

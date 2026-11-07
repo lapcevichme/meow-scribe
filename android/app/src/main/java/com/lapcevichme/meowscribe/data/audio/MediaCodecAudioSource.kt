@@ -7,7 +7,9 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.SystemClock
 import android.provider.OpenableColumns
+import android.util.Log
 import android.webkit.MimeTypeMap
 import com.lapcevichme.meowscribe.domain.pipeline.TranscriptionPipeline
 import com.lapcevichme.meowscribe.domain.repository.AudioSource
@@ -23,6 +25,8 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.coroutineContext
+
+private const val TAG = "MeowAudio"
 
 @Singleton
 class MediaCodecAudioSource @Inject constructor(
@@ -55,8 +59,11 @@ class MediaCodecAudioSource @Inject constructor(
 
     override suspend fun decode(localUri: String, onProgress: (Float) -> Unit): DecodedAudio =
         withContext(Dispatchers.Default) {
+            val t0 = SystemClock.elapsedRealtime()
             val (mono, sampleRate) = decodeToMono(Uri.parse(localUri), onProgress)
+            val t1 = SystemClock.elapsedRealtime()
             val pcm = Resampler.resample(mono, sampleRate, TranscriptionPipeline.SAMPLE_RATE)
+            Log.i(TAG, "decode ${t1 - t0} мс, resample $sampleRate→16000 ${SystemClock.elapsedRealtime() - t1} мс, аудио ${pcm.size / 16} мс")
             DecodedAudio(pcm, pcm.size * 1000L / TranscriptionPipeline.SAMPLE_RATE)
         }
 
@@ -87,24 +94,27 @@ class MediaCodecAudioSource @Inject constructor(
             var inputDone = false
             var outputDone = false
             var lastReported = -1
+            var shortScratch = ShortArray(0)
+            var floatScratch = FloatArray(0)
 
             while (!outputDone) {
                 coroutineContext.ensureActive()
-                if (!inputDone) {
-                    val inIdx = dec.dequeueInputBuffer(10_000)
-                    if (inIdx >= 0) {
-                        val buf = dec.getInputBuffer(inIdx)!!
-                        val size = extractor.readSampleData(buf, 0)
-                        if (size < 0) {
-                            dec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            inputDone = true
-                        } else {
-                            dec.queueInputBuffer(inIdx, 0, size, extractor.sampleTime, 0)
-                            extractor.advance()
-                        }
+                // Кормим декодер без ожидания, пока есть свободные входные буферы: блокирующий dequeue
+                // на каждом шаге превращал 2.5 мин аудио в ~15 с декодирования.
+                while (!inputDone) {
+                    val inIdx = dec.dequeueInputBuffer(0)
+                    if (inIdx < 0) break
+                    val buf = dec.getInputBuffer(inIdx)!!
+                    val size = extractor.readSampleData(buf, 0)
+                    if (size < 0) {
+                        dec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        inputDone = true
+                    } else {
+                        dec.queueInputBuffer(inIdx, 0, size, extractor.sampleTime, 0)
+                        extractor.advance()
                     }
                 }
-                when (val outIdx = dec.dequeueOutputBuffer(info, 10_000)) {
+                when (val outIdx = dec.dequeueOutputBuffer(info, 2_000)) {
                     MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                         val f = dec.outputFormat
                         sampleRate = f.getInteger(MediaFormat.KEY_SAMPLE_RATE)
@@ -119,24 +129,23 @@ class MediaCodecAudioSource @Inject constructor(
                         buf.order(ByteOrder.nativeOrder())
                         if (encoding == AudioFormat.ENCODING_PCM_FLOAT) {
                             val fb = buf.asFloatBuffer()
-                            val frames = fb.remaining() / channels
-                            for (fr in 0 until frames) {
-                                var sum = 0f
-                                for (c in 0 until channels) sum += fb.get()
-                                out.add(sum / channels)
-                            }
+                            val n = fb.remaining()
+                            if (floatScratch.size < n) floatScratch = FloatArray(n)
+                            fb.get(floatScratch, 0, n)
+                            out.addInterleaved(floatScratch, n, channels, 1f)
                         } else {
                             val sb = buf.asShortBuffer()
-                            val frames = sb.remaining() / channels
-                            for (fr in 0 until frames) {
-                                var sum = 0f
-                                for (c in 0 until channels) sum += sb.get() / 32768f
-                                out.add(sum / channels)
-                            }
+                            val n = sb.remaining()
+                            if (shortScratch.size < n) shortScratch = ShortArray(n)
+                            sb.get(shortScratch, 0, n)
+                            out.addInterleaved(shortScratch, n, channels)
                         }
                         dec.releaseOutputBuffer(outIdx, false)
                         if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outputDone = true
-                        if (durationUs > 0) {
+                        if (outputDone) {
+                            onProgress(1f)
+                        } else if (durationUs > 0) {
+                            // У EOS-буфера presentationTimeUs бывает 0 — поэтому он обработан выше.
                             val pct = (info.presentationTimeUs * 100 / durationUs).toInt().coerceIn(0, 100)
                             if (pct != lastReported) {
                                 lastReported = pct
@@ -179,5 +188,35 @@ class MediaCodecAudioSource @Inject constructor(
             data[size++] = v
         }
         fun toArray(): FloatArray = data.copyOf(size)
+
+        private fun ensure(extra: Int) {
+            if (size + extra > data.size) data = data.copyOf(maxOf(data.size * 2, size + extra))
+        }
+
+        /** Сводит interleaved PCM16 к моно. */
+        fun addInterleaved(src: ShortArray, n: Int, channels: Int) {
+            val frames = n / channels
+            ensure(frames)
+            val scale = 1f / (32768f * channels)
+            var k = 0
+            for (fr in 0 until frames) {
+                var sum = 0
+                for (c in 0 until channels) sum += src[k++]
+                data[size++] = sum * scale
+            }
+        }
+
+        /** Сводит interleaved float PCM к моно. */
+        fun addInterleaved(src: FloatArray, n: Int, channels: Int, gain: Float) {
+            val frames = n / channels
+            ensure(frames)
+            val scale = gain / channels
+            var k = 0
+            for (fr in 0 until frames) {
+                var sum = 0f
+                for (c in 0 until channels) sum += src[k++]
+                data[size++] = sum * scale
+            }
+        }
     }
 }
