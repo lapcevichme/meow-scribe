@@ -50,7 +50,14 @@ fun MeowNavHost() {
             SettingsScreen(onBack = { nav.popBackStack() })
         }
         composable<TranscriptRoute> {
-            TranscriptScreen(onBack = { nav.popBackStack() })
+            TranscriptScreen(
+                onBack = { nav.popBackStack() },
+                onReprocessing = { id ->
+                    nav.navigate(ProcessingRoute(id)) {
+                        popUpTo<TranscriptRoute> { inclusive = true }
+                    }
+                },
+            )
         }
     }
 }

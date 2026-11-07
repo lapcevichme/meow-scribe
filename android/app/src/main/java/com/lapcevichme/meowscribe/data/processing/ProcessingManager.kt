@@ -83,10 +83,12 @@ class ProcessingManager @Inject constructor(
                         processSummary(summaryId)
                         continue
                     }
-                    // Сводки добавляет только этот цикл, так что здесь работы точно нет.
-                    synchronized(busyLock) { if (queued.isEmpty()) _busy.value = false }
+                    synchronized(busyLock) {
+                        if (queued.isEmpty() && _summaries.value.isEmpty()) _busy.value = false
+                    }
                     id = queue.receive()
                 }
+                if (id == WAKE) continue // в очередь добавили сводку — цикл заберёт её сам
                 queued.remove(id)
                 if (cancelled.remove(id)) continue
                 process(id)
@@ -118,6 +120,18 @@ class ProcessingManager @Inject constructor(
             cancelled.add(sessionId)
             scope.launch { repository.setStatus(sessionId, SessionStatus.ERROR, CANCELLED_MESSAGE) }
         }
+    }
+
+    override fun summarize(sessionId: Long): Boolean {
+        if (!summarizer.isAvailable()) return false
+        if (sessionId in queued || sessionId in _summaries.value) return true
+        synchronized(busyLock) {
+            _summaries.update { it + sessionId }
+            _busy.value = true
+        }
+        ProcessingService.start(context)
+        queue.trySend(WAKE)
+        return true
     }
 
     override suspend fun resumePending() {
@@ -296,6 +310,9 @@ class ProcessingManager @Inject constructor(
 
     companion object {
         const val CANCELLED_MESSAGE = "Обработка отменена"
+
+        /** Будит цикл очереди, когда работы нет, а в очередь добавили сводку. id сессий начинаются с 1. */
+        private const val WAKE = -1L
 
         private val STAGE_WEIGHTS = mapOf(
             Stage.DECODE to 0.05f,

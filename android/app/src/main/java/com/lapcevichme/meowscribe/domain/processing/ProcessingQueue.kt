@@ -21,6 +21,12 @@ interface ProcessingQueue {
     fun enqueue(sessionId: Long)
     fun cancel(sessionId: Long)
 
+    /**
+     * Поставить в очередь сводку уже готовой записи (например, после правок текста).
+     * @return false, если LLM нет в сборке.
+     */
+    fun summarize(sessionId: Long): Boolean
+
     /** Вернуть в очередь сессии, прерванные смертью процесса. */
     suspend fun resumePending()
 }

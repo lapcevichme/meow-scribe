@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Upsert
+import com.lapcevichme.meowscribe.domain.model.Profile
 import com.lapcevichme.meowscribe.domain.model.SessionStatus
 import kotlinx.coroutines.flow.Flow
 
@@ -82,6 +83,23 @@ interface SessionDao {
 
     @Query("SELECT sessionId, text FROM utterances ORDER BY sessionId, idx")
     fun observeAllTexts(): Flow<List<SessionText>>
+
+    @Query("UPDATE sessions SET profile = :profile, language = :language, numSpeakers = :numSpeakers, useLlm = :useLlm, summary = NULL WHERE id = :id")
+    suspend fun updateConfigClearSummary(id: Long, profile: Profile, language: String, numSpeakers: Int?, useLlm: Boolean)
+
+    @Query("DELETE FROM speakers WHERE sessionId = :sessionId")
+    suspend fun deleteSpeakers(sessionId: Long)
+
+    @Query("DELETE FROM session_voices WHERE sessionId = :sessionId")
+    suspend fun deleteSessionVoices(sessionId: Long)
+
+    /** Повторная обработка: номера спикеров поменяются, так что имена, голоса и сводка устаревают. */
+    @Transaction
+    suspend fun resetForReprocess(id: Long, profile: Profile, language: String, numSpeakers: Int?, useLlm: Boolean) {
+        updateConfigClearSummary(id, profile, language, numSpeakers, useLlm)
+        deleteSpeakers(id)
+        deleteSessionVoices(id)
+    }
 
     @Transaction
     suspend fun replaceUtterances(sessionId: Long, items: List<UtteranceEntity>) {

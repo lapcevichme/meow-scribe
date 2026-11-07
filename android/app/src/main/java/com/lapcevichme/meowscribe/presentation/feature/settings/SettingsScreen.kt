@@ -43,6 +43,7 @@ import com.lapcevichme.meowscribe.domain.model.Profile
 import com.lapcevichme.meowscribe.domain.voice.VoiceProfile
 import com.lapcevichme.meowscribe.presentation.components.BackTopBar
 import com.lapcevichme.meowscribe.presentation.components.label
+import com.lapcevichme.meowscribe.presentation.components.ChoiceGroup
 import com.lapcevichme.meowscribe.presentation.components.languageLabel
 
 @Composable
@@ -76,7 +77,7 @@ fun SettingsScreen(
             )
 
             Section("Режим распознавания") {
-                Choice(
+                ChoiceGroup(
                     options = Profile.entries,
                     selected = config.profile,
                     label = { it.label() },
@@ -91,7 +92,7 @@ fun SettingsScreen(
             }
 
             Section("Язык записи") {
-                Choice(
+                ChoiceGroup(
                     options = listOf("ru", "en", "auto"),
                     selected = config.language,
                     label = ::languageLabel,
@@ -100,7 +101,7 @@ fun SettingsScreen(
             }
 
             Section("Сколько говорящих") {
-                Choice(
+                ChoiceGroup(
                     options = listOf<Int?>(null, 1, 2, 3, 4, 5),
                     selected = config.numSpeakers,
                     label = { it?.toString() ?: "Авто" },
@@ -113,9 +114,9 @@ fun SettingsScreen(
             Section("Языковая модель") {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("Пунктуация и регистр", style = MaterialTheme.typography.titleMedium)
+                        Text("Название и сводка", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "Локальная LLM расставляет знаки препинания. Слова при этом не меняются.",
+                            "Локальная LLM придумывает название и выписывает главное. Текст расшифровки она не меняет.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -229,35 +230,3 @@ private fun Hint(text: String) {
     Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
-/** Группа связанных кнопок с одним выбранным вариантом. */
-@Composable
-private fun <T> Choice(
-    options: List<T>,
-    selected: T,
-    label: (T) -> String,
-    onSelect: (T) -> Unit,
-    weight: (T) -> Float = { 1f },
-) {
-    // Невыбранная кнопка по умолчанию цвета surfaceContainer и сливается с карточкой секции.
-    val colors = ToggleButtonDefaults.colors(
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-    )
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
-    ) {
-        options.forEachIndexed { i, option ->
-            ToggleButton(
-                checked = option == selected,
-                onCheckedChange = { onSelect(option) },
-                colors = colors,
-                modifier = Modifier.weight(weight(option)).semantics { role = Role.RadioButton },
-                shapes = when (i) {
-                    0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
-                    options.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
-                    else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
-                },
-            ) { Text(label(option), maxLines = 1) }
-        }
-    }
-}

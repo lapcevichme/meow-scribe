@@ -79,6 +79,9 @@ class SessionRepositoryImpl @Inject constructor(
 
     override suspend fun setSummary(id: Long, summary: String?) = dao.updateSummary(id, summary)
 
+    override suspend fun resetForReprocess(id: Long, config: PipelineConfig) =
+        dao.resetForReprocess(id, config.profile, config.language, config.numSpeakers, config.useLlm)
+
     override suspend fun replaceTranscript(id: Long, utterances: List<Utterance>) =
         dao.replaceUtterances(id, utterances.toEntities(id))
 

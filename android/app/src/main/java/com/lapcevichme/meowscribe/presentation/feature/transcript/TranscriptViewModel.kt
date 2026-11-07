@@ -49,6 +49,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import com.lapcevichme.meowscribe.domain.model.PipelineConfig
+import com.lapcevichme.meowscribe.domain.usecase.ReprocessSessionUseCase
 import javax.inject.Inject
 
 sealed interface TranscriptUiState {
@@ -88,6 +90,8 @@ sealed interface TranscriptEvent {
     data class Message(val text: String, val action: SnackAction? = null) : TranscriptEvent
     data class Share(val uri: String, val mimeType: String) : TranscriptEvent
     data class Copy(val text: String) : TranscriptEvent
+    /** Запись ушла на повторную обработку — открываем экран прогресса. */
+    data class Reprocessing(val sessionId: Long) : TranscriptEvent
 }
 
 /** Что показываем в шторке экспорта. */
@@ -109,8 +113,9 @@ class TranscriptViewModel @Inject constructor(
     private val mergeUtterances: MergeUtterancesUseCase,
     private val rememberVoice: RememberVoiceUseCase,
     private val voiceRepository: VoiceProfileRepository,
+    private val reprocessSession: ReprocessSessionUseCase,
     embedder: SpeakerEmbedder,
-    queue: ProcessingQueue,
+    private val queue: ProcessingQueue,
 ) : ViewModel() {
 
     private val canRememberVoice = embedder.isAvailable
@@ -304,6 +309,21 @@ class TranscriptViewModel @Inject constructor(
                 undoSnapshot = before
                 _events.send(TranscriptEvent.Message("Реплики склеены", SnackAction.UNDO))
             }
+        }
+    }
+
+    fun reprocess(config: PipelineConfig) {
+        viewModelScope.launch {
+            exo.pause()
+            if (reprocessSession(sessionId, config)) _events.send(TranscriptEvent.Reprocessing(sessionId))
+            else _events.send(TranscriptEvent.Message("Запись уже обрабатывается"))
+        }
+    }
+
+    /** Сводка по текущему тексту. LLM детерминирована: без правок текста результат будет тем же. */
+    fun refreshSummary() {
+        viewModelScope.launch {
+            if (!queue.summarize(sessionId)) _events.send(TranscriptEvent.Message("Языковой модели нет в этой сборке"))
         }
     }
 

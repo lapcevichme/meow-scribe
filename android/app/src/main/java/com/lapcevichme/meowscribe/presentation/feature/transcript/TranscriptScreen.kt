@@ -64,6 +64,7 @@ import androidx.compose.material3.SplitButtonDefaults
 import androidx.compose.material3.SplitButtonLayout
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ToggleButton
 import androidx.compose.runtime.Composable
@@ -104,12 +105,17 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lapcevichme.meowscribe.R
 import com.lapcevichme.meowscribe.domain.processing.SummaryState
+import com.lapcevichme.meowscribe.domain.model.PipelineConfig
+import com.lapcevichme.meowscribe.domain.model.Profile
 import com.lapcevichme.meowscribe.domain.model.SessionStatus
 import com.lapcevichme.meowscribe.domain.model.Utterance
 import com.lapcevichme.meowscribe.domain.export.ExportFormat
 import com.lapcevichme.meowscribe.domain.export.ExportOptions
 import com.lapcevichme.meowscribe.domain.voice.VoiceMatch
 import com.lapcevichme.meowscribe.presentation.components.BackTopBar
+import com.lapcevichme.meowscribe.presentation.components.ChoiceGroup
+import com.lapcevichme.meowscribe.presentation.components.label
+import com.lapcevichme.meowscribe.presentation.components.languageLabel
 import com.lapcevichme.meowscribe.presentation.components.SpeakerAvatar
 import com.lapcevichme.meowscribe.presentation.components.SpeakerShape
 import com.lapcevichme.meowscribe.presentation.components.SpeakerStyle
@@ -132,6 +138,7 @@ import kotlin.math.roundToInt
 @Composable
 fun TranscriptScreen(
     onBack: () -> Unit,
+    onReprocessing: (Long) -> Unit,
     viewModel: TranscriptViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -141,6 +148,7 @@ fun TranscriptScreen(
     val context = LocalContext.current
 
     var exportOpen by remember { mutableStateOf(false) }
+    var reprocessOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         viewModel.events.collect { event ->
@@ -159,6 +167,7 @@ fun TranscriptScreen(
                     snackbar.currentSnackbarData?.dismiss()
                     launch { snackbar.showSnackbar("Скопировано") }
                 }
+                is TranscriptEvent.Reprocessing -> onReprocessing(event.sessionId)
             }
         }
     }
@@ -173,6 +182,9 @@ fun TranscriptScreen(
             BackTopBar(onBack = onBack) {
                 val content = state as? TranscriptUiState.Content
                 if (content != null) {
+                    IconButton(onClick = { reprocessOpen = true }) {
+                        Icon(painterResource(R.drawable.ic_redo), contentDescription = "Обработать заново")
+                    }
                     ExportButton(onQuickJson = viewModel::quickJson, onMore = { exportOpen = true })
                 }
             }
@@ -192,6 +204,7 @@ fun TranscriptScreen(
                     onSplit = viewModel::split,
                     onMerge = viewModel::merge,
                     onCopy = { context.copyToClipboard(it) },
+                    onRefreshSummary = viewModel::refreshSummary,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -212,6 +225,15 @@ fun TranscriptScreen(
             )
         }
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 96.dp))
+    }
+
+    val reprocessing = state as? TranscriptUiState.Content
+    if (reprocessOpen && reprocessing != null) {
+        ReprocessSheet(
+            initial = reprocessing.session.config,
+            onDismiss = { reprocessOpen = false },
+            onConfirm = { viewModel.reprocess(it); reprocessOpen = false },
+        )
     }
 
     if (exportOpen) {
@@ -255,6 +277,7 @@ private fun TranscriptBody(
     onSplit: (Int, String, Int, String) -> Unit,
     onMerge: (index: Int, withNext: Boolean, text: String, speakerId: String) -> Unit,
     onCopy: (String) -> Unit,
+    onRefreshSummary: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val utterances = content.utterances
@@ -291,7 +314,7 @@ private fun TranscriptBody(
     ) {
         items(rows.size, key = { rows[it].key }) { i ->
             when (val row = rows[i]) {
-                Row.Header -> TranscriptHeader(content, ::nameOf, voiceBusy, onRenameClick = { renaming = it })
+                Row.Header -> TranscriptHeader(content, ::nameOf, voiceBusy, onRenameClick = { renaming = it }, onRefreshSummary = onRefreshSummary)
                 is Row.GroupHeader -> GroupHeader(
                     speakerId = row.group.speakerId,
                     name = nameOf(row.group.speakerId),
@@ -377,6 +400,7 @@ private fun TranscriptHeader(
     nameOf: (String) -> String,
     voiceBusy: String?,
     onRenameClick: (String) -> Unit,
+    onRefreshSummary: () -> Unit,
 ) {
     val s = content.session
     Column(Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -447,12 +471,23 @@ private fun TranscriptHeader(
                 }
             }
         }
-        if (s.summary == null) content.summaryState?.let { SummaryPending(it) }
+        when {
+            content.summaryState != null && s.summary == null -> SummaryPending(content.summaryState)
+            s.summary == null && content.utterances.isNotEmpty() -> NoSummary(onRefreshSummary)
+        }
         s.summary?.let { summary ->
             val points = s.summaryPoints
             Surface(color = MaterialTheme.colorScheme.tertiaryContainer, shape = RoundedCornerShape(24.dp)) {
                 Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Главное", style = MaterialTheme.typography.titleSmallEmphasized)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Главное", style = MaterialTheme.typography.titleSmallEmphasized, modifier = Modifier.weight(1f))
+                        // Пересчёт по текущему тексту: имеет смысл после правок расшифровки.
+                        if (content.summaryState != null) {
+                            LoadingIndicator(Modifier.padding(horizontal = 8.dp).size(40.dp)) // высота как у TextButton: строка не прыгает
+                        } else {
+                            TextButton(onClick = onRefreshSummary) { Text("Обновить") }
+                        }
+                    }
                     // Сводку без пунктов (старый или нестандартный ответ модели) показываем как есть.
                     if (points.isEmpty()) Text(summary, style = MaterialTheme.typography.bodyMedium)
                     points.forEach { point ->
@@ -471,6 +506,25 @@ private fun TranscriptHeader(
                     )
                 }
             }
+        }
+    }
+}
+
+/** Сводки нет: LLM была выключена, не справилась с форматом или запись старая. */
+@Composable
+private fun NoSummary(onCreate: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = RoundedCornerShape(24.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Сводки пока нет",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onCreate) { Text("Сделать сводку") }
         }
     }
 }
@@ -1180,6 +1234,81 @@ private fun SheetAction(
             }
         }
     }
+}
+
+/** Повторная обработка с другими настройками. Аудио уже внутри приложения, импорт не нужен. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ReprocessSheet(initial: PipelineConfig, onDismiss: () -> Unit, onConfirm: (PipelineConfig) -> Unit) {
+    var config by remember(initial) { mutableStateOf(initial) }
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp)
+                .navigationBarsPadding()
+                .padding(bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("Обработать заново", style = MaterialTheme.typography.headlineSmallEmphasized, modifier = Modifier.padding(start = 4.dp))
+            Text(
+                "Например, если язык определился неверно или нужно точнее разделить говорящих.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp),
+            )
+            SheetSectionTitle("Язык записи")
+            ChoiceGroup(
+                options = listOf("ru", "en", "auto"),
+                selected = config.language,
+                label = ::languageLabel,
+                onSelect = { config = config.copy(language = it) },
+            )
+            SheetSectionTitle("Режим")
+            ChoiceGroup(
+                options = Profile.entries,
+                selected = config.profile,
+                label = { it.label() },
+                onSelect = { config = config.copy(profile = it) },
+            )
+            SheetSectionTitle("Сколько говорящих")
+            ChoiceGroup(
+                options = listOf<Int?>(null, 1, 2, 3, 4, 5),
+                selected = config.numSpeakers,
+                label = { it?.toString() ?: "Авто" },
+                onSelect = { config = config.copy(numSpeakers = it) },
+                weight = { if (it == null) 2f else 1f },
+            )
+            Surface(color = MaterialTheme.colorScheme.errorContainer, shape = RoundedCornerShape(20.dp)) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(painterResource(R.drawable.ic_error), contentDescription = null, modifier = Modifier.size(20.dp))
+                    Text(
+                        "Текущая расшифровка, ваши правки, имена спикеров и сводка будут заменены.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+            Button(
+                onClick = { onConfirm(config) },
+                shape = RoundedCornerShape(28.dp),
+                modifier = Modifier.fillMaxWidth().height(56.dp),
+            ) {
+                Icon(painterResource(R.drawable.ic_redo), contentDescription = null)
+                Spacer(Modifier.width(10.dp))
+                Text("Обработать")
+            }
+        }
+    }
+}
+
+@Composable
+private fun SheetSectionTitle(text: String) {
+    Text(text, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
 }
 
 @Composable
