@@ -55,42 +55,68 @@ class ProcessingManager @Inject constructor(
     private val queued = Collections.synchronizedSet(LinkedHashSet<Long>())
     private val cancelled = Collections.synchronizedSet(HashSet<Long>())
 
+    /** Защищает связку «очереди пусты → busy = false» от гонки с [enqueue]. */
+    private val busyLock = Any()
+
     @Volatile private var currentId: Long? = null
     @Volatile private var currentJob: Job? = null
+    @Volatile private var currentIsSummary = false
 
     private val _progress = MutableStateFlow<Map<Long, ProcessingProgress>>(emptyMap())
     override val progress: StateFlow<Map<Long, ProcessingProgress>> = _progress.asStateFlow()
+
+    /** Сводки ждут, пока не опустеет очередь расшифровок: LLM не должна задерживать следующие записи. */
+    private val _summaries = MutableStateFlow<Set<Long>>(emptySet())
+    override val summaries: StateFlow<Set<Long>> = _summaries.asStateFlow()
 
     private val _busy = MutableStateFlow(false)
     override val busy: StateFlow<Boolean> = _busy.asStateFlow()
 
     init {
         scope.launch {
-            for (id in queue) {
+            while (true) {
+                // Расшифровки всегда первыми, сводки — только когда очередь расшифровок пуста.
+                var id = queue.tryReceive().getOrNull()
+                if (id == null) {
+                    val summaryId = _summaries.value.firstOrNull()
+                    if (summaryId != null) {
+                        processSummary(summaryId)
+                        continue
+                    }
+                    // Сводки добавляет только этот цикл, так что здесь работы точно нет.
+                    synchronized(busyLock) { if (queued.isEmpty()) _busy.value = false }
+                    id = queue.receive()
+                }
                 queued.remove(id)
                 if (cancelled.remove(id)) continue
                 process(id)
-                if (queued.isEmpty()) _busy.value = false
             }
         }
     }
 
     override fun enqueue(sessionId: Long) {
-        if (currentId == sessionId || !queued.add(sessionId)) return
+        if (currentId == sessionId) {
+            if (!currentIsSummary) return
+            currentJob?.cancel() // запись пересчитывается заново — её сводка устарела
+        }
+        synchronized(busyLock) {
+            if (!queued.add(sessionId)) return
+            _busy.value = true
+        }
         cancelled.remove(sessionId)
-        _busy.value = true
+        _summaries.update { it - sessionId } // запись пересчитывается — старая сводка не нужна
         ProcessingService.start(context)
         queue.trySend(sessionId)
         scope.launch { repository.setStatus(sessionId, SessionStatus.QUEUED) }
     }
 
     override fun cancel(sessionId: Long) {
+        _summaries.update { it - sessionId }
         if (currentId == sessionId) {
             currentJob?.cancel()
         } else if (queued.remove(sessionId)) {
             cancelled.add(sessionId)
             scope.launch { repository.setStatus(sessionId, SessionStatus.ERROR, CANCELLED_MESSAGE) }
-            if (queued.isEmpty() && currentId == null) _busy.value = false
         }
     }
 
@@ -171,8 +197,10 @@ class ProcessingManager @Inject constructor(
                         val total = SystemClock.elapsedRealtime() - started
                         repository.saveResult(id, event.utterances, total)
                         autoExport(id)
-                        // LLM — уже после сохранения и экспорта: на время до результата не влияет
-                        if (config.useLlm) summarize(id, event.utterances) { f -> publish(Stage.LLM, f, "Готовим сводку") }
+                        // LLM — уже после сохранения и экспорта, в отдельной очереди с низким приоритетом.
+                        if (config.useLlm && event.utterances.isNotEmpty() && summarizer.isAvailable()) {
+                            _summaries.update { it + id }
+                        }
                     }
                     is PipelineEvent.Failed -> throw event.error
                 }
@@ -184,12 +212,46 @@ class ProcessingManager @Inject constructor(
         }
     }
 
+    private suspend fun processSummary(id: Long) {
+        currentId = id
+        currentIsSummary = true
+        val started = SystemClock.elapsedRealtime()
+        fun publish(f: Float) {
+            _progress.update {
+                it + (id to ProcessingProgress(
+                    sessionId = id,
+                    stage = Stage.LLM,
+                    stageFraction = f.coerceIn(0f, 1f),
+                    overallFraction = f.coerceIn(0f, 1f),
+                    message = "Готовим сводку",
+                    partial = emptyList(),
+                    elapsedMs = SystemClock.elapsedRealtime() - started,
+                    audioMs = null,
+                    peakRamMb = null,
+                    stageTimesMs = emptyMap(),
+                ))
+            }
+        }
+        // Сразу помечаем «считается»: загрузка модели занимает несколько секунд до первого прогресса.
+        publish(0f)
+        val job = scope.launch {
+            val utterances = repository.getTranscript(id)
+            if (utterances.isNotEmpty()) summarize(id, utterances, ::publish)
+        }
+        currentJob = job
+        job.join() // отмена сводки — не ошибка записи: транскрипт уже сохранён
+        currentJob = null
+        currentId = null
+        currentIsSummary = false
+        _progress.update { it - id }
+        _summaries.update { it - id }
+    }
+
     private suspend fun summarize(
         id: Long,
         utterances: List<com.lapcevichme.meowscribe.domain.model.Utterance>,
         onProgress: (Float) -> Unit,
     ) {
-        if (!summarizer.isAvailable()) return
         try {
             val s = summarizer.summarize(utterances, onProgress) ?: return
             val text = buildString {
@@ -241,7 +303,7 @@ class ProcessingManager @Inject constructor(
             Stage.DIARIZATION to 0.2f,
             Stage.ASR to 0.55f,
             Stage.MERGE to 0.05f,
-            Stage.LLM to 0.1f,
+            Stage.LLM to 0f, // сводка идёт отдельной задачей и в прогресс расшифровки не входит
         )
     }
 }

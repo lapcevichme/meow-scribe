@@ -53,6 +53,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingToolbarDefaults
 import androidx.compose.material3.HorizontalFloatingToolbar
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -102,6 +103,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lapcevichme.meowscribe.R
+import com.lapcevichme.meowscribe.domain.processing.SummaryState
 import com.lapcevichme.meowscribe.domain.model.SessionStatus
 import com.lapcevichme.meowscribe.domain.model.Utterance
 import com.lapcevichme.meowscribe.domain.export.ExportFormat
@@ -440,12 +442,45 @@ private fun TranscriptHeader(
                 }
             }
         }
+        if (s.summary == null) content.summaryState?.let { SummaryPending(it) }
         s.summary?.let { summary ->
             Surface(color = MaterialTheme.colorScheme.tertiaryContainer, shape = RoundedCornerShape(24.dp)) {
                 Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("Сводка", style = MaterialTheme.typography.titleSmall)
                     Text(summary, style = MaterialTheme.typography.bodyMedium)
                 }
+            }
+        }
+    }
+}
+
+/** Транскрипт готов, сводку LLM ещё ждём. Без этого непонятно, чем занята очередь. */
+@Composable
+private fun SummaryPending(state: SummaryState) {
+    Surface(color = MaterialTheme.colorScheme.tertiaryContainer, shape = RoundedCornerShape(24.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (state == SummaryState.RUNNING) {
+                LoadingIndicator(Modifier.size(32.dp))
+            } else {
+                Icon(painterResource(R.drawable.ic_clock), contentDescription = null)
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    if (state == SummaryState.RUNNING) "Готовим сводку…" else "Сводка в очереди",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    if (state == SummaryState.RUNNING) {
+                        "Локальная LLM пишет название и главные пункты. Текст расшифровки она не меняет."
+                    } else {
+                        "Сводки пишем после того, как расшифруем все записи из очереди."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         }
     }

@@ -10,7 +10,7 @@
     <string name="stage_diarization">Разделение спикеров</string>
     <string name="stage_asr">Распознавание речи</string>
     <string name="stage_merge">Сборка реплик</string>
-    <string name="stage_llm">LLM-постобработка</string>
+    <string name="stage_llm">Сводка</string>
     <string name="recording_channel_name">Запись с микрофона</string>
     <string name="recording_notification_title">Идёт запись</string>
 </resources>

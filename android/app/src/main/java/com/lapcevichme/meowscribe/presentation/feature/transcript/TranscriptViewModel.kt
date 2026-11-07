@@ -38,6 +38,10 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import com.lapcevichme.meowscribe.domain.processing.summaryState
+import com.lapcevichme.meowscribe.domain.processing.SummaryState
+import com.lapcevichme.meowscribe.domain.processing.ProcessingQueue
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.receiveAsFlow
@@ -62,6 +66,8 @@ sealed interface TranscriptUiState {
         val voices: Map<String, VoiceMatch> = emptyMap(),
         /** Можно ли запоминать голоса (есть модель эмбеддингов). */
         val canRememberVoice: Boolean = false,
+        /** Сводка LLM ещё не готова: ждёт очереди или считается. */
+        val summaryState: SummaryState? = null,
     ) : TranscriptUiState
 }
 
@@ -104,6 +110,7 @@ class TranscriptViewModel @Inject constructor(
     private val rememberVoice: RememberVoiceUseCase,
     private val voiceRepository: VoiceProfileRepository,
     embedder: SpeakerEmbedder,
+    queue: ProcessingQueue,
 ) : ViewModel() {
 
     private val canRememberVoice = embedder.isAvailable
@@ -115,7 +122,8 @@ class TranscriptViewModel @Inject constructor(
         repository.observeTranscript(sessionId),
         repository.observeSpeakerNames(sessionId),
         voiceRepository.observeMatches(sessionId),
-    ) { session, utterances, names, voices ->
+        combine(queue.summaries, queue.progress) { s, p -> summaryState(sessionId, s, p) }.distinctUntilChanged(),
+    ) { session, utterances, names, voices, summary ->
         when {
             session == null -> TranscriptUiState.NotFound
             session.status != SessionStatus.DONE -> TranscriptUiState.NotReady(session.status)
@@ -126,6 +134,7 @@ class TranscriptViewModel @Inject constructor(
                 speakerNames = names,
                 voices = voices,
                 canRememberVoice = canRememberVoice,
+                summaryState = summary,
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TranscriptUiState.Loading)

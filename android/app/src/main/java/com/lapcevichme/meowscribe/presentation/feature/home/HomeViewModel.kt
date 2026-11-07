@@ -6,6 +6,8 @@ import com.lapcevichme.meowscribe.domain.model.ProcessingProgress
 import com.lapcevichme.meowscribe.domain.model.Session
 import com.lapcevichme.meowscribe.domain.model.SessionStatus
 import com.lapcevichme.meowscribe.domain.processing.ProcessingQueue
+import com.lapcevichme.meowscribe.domain.processing.SummaryState
+import com.lapcevichme.meowscribe.domain.processing.summaryState
 import com.lapcevichme.meowscribe.domain.repository.AudioSource
 import com.lapcevichme.meowscribe.domain.repository.SessionRepository
 import com.lapcevichme.meowscribe.domain.usecase.ImportAudioUseCase
@@ -31,6 +33,8 @@ data class SessionItem(
     val progress: ProcessingProgress?,
     /** Реплика, в которой нашёлся поисковый запрос. */
     val snippet: String? = null,
+    /** Сводка LLM ждёт очереди или считается. */
+    val summary: SummaryState? = null,
 )
 
 data class HomeUiState(
@@ -72,17 +76,19 @@ class HomeViewModel @Inject constructor(
 
     val state: StateFlow<HomeUiState> = combine(
         repository.observeSessions(),
-        queue.progress,
+        combine(queue.progress, queue.summaries, ::Pair),
         filter,
         importing,
         search,
-    ) { sessions, progress, f, isImporting, s ->
+    ) { sessions, (progress, summaries), f, isImporting, s ->
         val found = if (s.query.isEmpty()) sessions else sessions.filter {
             it.id in s.matches || it.title.contains(s.query, ignoreCase = true)
         }
         HomeUiState(
             isLoading = false,
-            items = found.filter { it.matches(f) }.map { SessionItem(it, progress[it.id], s.matches[it.id]) },
+            items = found.filter { it.matches(f) }.map {
+                SessionItem(it, progress[it.id], s.matches[it.id], summaryState(it.id, summaries, progress))
+            },
             query = s.query,
             filter = f,
             totalCount = sessions.size,

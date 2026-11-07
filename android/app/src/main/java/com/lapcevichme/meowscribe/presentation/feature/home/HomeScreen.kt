@@ -87,6 +87,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lapcevichme.meowscribe.R
 import com.lapcevichme.meowscribe.domain.model.Session
 import com.lapcevichme.meowscribe.domain.model.SessionStatus
+import com.lapcevichme.meowscribe.domain.processing.SummaryState
 import com.lapcevichme.meowscribe.presentation.components.SpeakerShape
 import com.lapcevichme.meowscribe.presentation.components.formatCreatedAt
 import com.lapcevichme.meowscribe.presentation.components.formatDuration
@@ -364,7 +365,13 @@ private fun SessionRow(
                 Text(meta.joinToString(" · "))
                 item.snippet?.let { Snippet(it, query) }
                 when (s.status) {
-                    SessionStatus.DONE -> SpeakersLine(s.speakerCount)
+                    SessionStatus.DONE -> {
+                        if (s.speakerCount == 0) {
+                            Text("Речь не найдена", style = MaterialTheme.typography.labelMedium)
+                        }
+                        SpeakersLine(s.speakerCount)
+                        item.summary?.let { SummaryLine(it) }
+                    }
                     SessionStatus.PROCESSING -> ProgressLine(item)
                     SessionStatus.QUEUED -> Text("В очереди", style = MaterialTheme.typography.labelMedium)
                     SessionStatus.ERROR -> Text(
@@ -390,6 +397,19 @@ private fun SpeakersLine(count: Int) {
         Spacer(Modifier.width(6.dp))
         Text(pluralSpeakers(count), style = MaterialTheme.typography.labelMedium)
     }
+}
+
+/** Расшифровка готова, а сводка LLM ещё в очереди или считается. */
+@Composable
+private fun SummaryLine(state: SummaryState) {
+    Text(
+        when (state) {
+            SummaryState.QUEUED -> "Сводка в очереди"
+            SummaryState.RUNNING -> "Готовим сводку…"
+        },
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.tertiary,
+    )
 }
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
