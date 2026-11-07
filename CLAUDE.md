@@ -71,7 +71,8 @@ Clean architecture **на пакетах** в одном модуле `:app`, MV
 domain/                      # чистый Kotlin, без android.*
 ├── model/                   # Utterance, Word, PipelineConfig, Profile, Session …
 ├── pipeline/                # TranscriptionPipeline, PipelineEvent, Stage, Stats — КОНТРАКТ
-├── repository/              # интерфейсы: SessionRepository, AudioDecoder, TranscriptExporter
+├── repository/              # интерфейсы: SessionRepository, AudioSource, TranscriptExporter
+├── processing/              # ProcessingQueue — очередь обработки
 └── usecase/                 # только где есть логика (ProcessAudio, Export)
 data/
 ├── pipeline/fake/           # FakePipeline — для разработки UI
@@ -81,12 +82,13 @@ data/
 ├── db/                      # Room
 ├── export/                  # JSON (строгая схема), TXT, SRT
 ├── models/                  # ModelLocator — пути к весам, копирование .gguf из assets
+├── processing/              # ProcessingManager — очередь и прогресс
 └── repository/              # реализации интерфейсов domain
 service/                     # Foreground Service обработки
 di/                          # Hilt-модули
 presentation/
-├── common/                  # Lce и общие UI-утилиты
-├── theme/  navigation/  components/
+├── components/              # общие composable: спикеры, форматтеры, топбар
+├── theme/  navigation/
 └── feature/{home,processing,transcript}/
 ```
 
@@ -98,9 +100,9 @@ presentation/
 
 ### Соглашения presentation
 
-- `ViewModel` отдаёт `StateFlow<XxxUiState>`. Загрузка контента описывается через `Lce<T>` (`presentation/common/Lce.kt`), а плеер, режим редактирования и т. п. лежат отдельными полями `UiState` рядом с `Lce`.
+- `ViewModel` отдаёт `StateFlow<XxxUiState>`. У каждого экрана свой `sealed interface XxxUiState` (`Loading` / `NotFound` / `Content` …), общего LCE-шаблона нет. Плеер и другие независимые части состояния живут в отдельном `StateFlow` рядом.
 - Разовые события (снекбар, навигация) идут через `Channel` → `receiveAsFlow()`.
-- Обработку держит не ViewModel, а `@Singleton ProcessingRepository` со `StateFlow`. Запускает её Foreground Service, ViewModel только подписывается.
+- Обработку держит не ViewModel, а `@Singleton ProcessingManager` (`data/processing/`, интерфейс `domain/processing/ProcessingQueue`): последовательная очередь со `StateFlow` прогресса. Foreground Service держит процесс живым и показывает уведомление, ViewModel только подписывается.
 
 ### ML-модели (веса)
 

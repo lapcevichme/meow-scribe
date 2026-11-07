@@ -1,3 +1,14 @@
 <resources>
     <string name="app_name">MeowScribe</string>
+
+    <string name="processing_channel_name">Обработка записей</string>
+    <string name="processing_notification_title">Расшифровка записи</string>
+    <string name="processing_notification_preparing">Подготовка…</string>
+
+    <string name="stage_decode">Декодирование</string>
+    <string name="stage_vad">Поиск речи</string>
+    <string name="stage_diarization">Разделение спикеров</string>
+    <string name="stage_asr">Распознавание речи</string>
+    <string name="stage_merge">Сборка реплик</string>
+    <string name="stage_llm">LLM-постобработка</string>
 </resources>
