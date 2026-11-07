@@ -34,6 +34,9 @@ interface SessionDao {
     @Query("UPDATE sessions SET status = 'DONE', errorMessage = NULL, speakerCount = :speakers, processingMs = :processingMs WHERE id = :id")
     suspend fun markDone(id: Long, speakers: Int, processingMs: Long)
 
+    @Query("UPDATE sessions SET summary = :summary WHERE id = :id")
+    suspend fun updateSummary(id: Long, summary: String?)
+
     @Query("UPDATE sessions SET speakerCount = :speakers WHERE id = :id")
     suspend fun updateSpeakerCount(id: Long, speakers: Int)
 

@@ -1,6 +1,6 @@
 package com.lapcevichme.meowscribe.di
 
-import com.lapcevichme.meowscribe.data.pipeline.fake.FakePipeline
+import com.lapcevichme.meowscribe.data.pipeline.sherpa.SherpaPipeline
 import com.lapcevichme.meowscribe.domain.pipeline.TranscriptionPipeline
 import dagger.Module
 import dagger.Provides
@@ -12,8 +12,8 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object PipelineModule {
 
-    /** Точка переключения: FakePipeline → SherpaPipeline, когда он будет готов. */
+    /** Точка переключения: FakePipeline (UI без моделей) ↔ SherpaPipeline (настоящий инференс). */
     @Provides
     @Singleton
-    fun provideTranscriptionPipeline(): TranscriptionPipeline = FakePipeline()
+    fun provideTranscriptionPipeline(impl: SherpaPipeline): TranscriptionPipeline = impl
 }

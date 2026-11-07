@@ -77,6 +77,8 @@ class SessionRepositoryImpl @Inject constructor(
         dao.replaceResult(id, utterances.toEntities(id), utterances.map { it.speakerId }.distinct().size, processingMs)
     }
 
+    override suspend fun setSummary(id: Long, summary: String?) = dao.updateSummary(id, summary)
+
     override suspend fun replaceTranscript(id: Long, utterances: List<Utterance>) =
         dao.replaceUtterances(id, utterances.toEntities(id))
 

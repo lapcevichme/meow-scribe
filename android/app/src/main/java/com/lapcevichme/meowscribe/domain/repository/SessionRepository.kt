@@ -29,6 +29,7 @@ interface SessionRepository {
     suspend fun setStatus(id: Long, status: SessionStatus, errorMessage: String? = null)
     suspend fun setDuration(id: Long, durationMs: Long)
     suspend fun saveResult(id: Long, utterances: List<Utterance>, processingMs: Long)
+    suspend fun setSummary(id: Long, summary: String?)
 
     suspend fun updateUtterance(id: Long, index: Int, text: String, speakerId: String)
     /** Полностью заменяет реплики записи (разделение, слияние). */

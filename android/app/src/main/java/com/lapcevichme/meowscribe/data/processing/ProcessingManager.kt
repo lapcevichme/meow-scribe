@@ -2,6 +2,7 @@ package com.lapcevichme.meowscribe.data.processing
 
 import android.content.Context
 import android.os.SystemClock
+import com.lapcevichme.meowscribe.data.llm.LlmSummarizer
 import com.lapcevichme.meowscribe.domain.model.PipelineConfig
 import com.lapcevichme.meowscribe.domain.model.ProcessingProgress
 import com.lapcevichme.meowscribe.domain.model.SessionStatus
@@ -46,6 +47,7 @@ class ProcessingManager @Inject constructor(
     private val pipeline: TranscriptionPipeline,
     private val exporter: TranscriptExporter,
     private val recognizeVoices: RecognizeVoicesUseCase,
+    private val summarizer: LlmSummarizer,
 ) : ProcessingQueue {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -169,6 +171,8 @@ class ProcessingManager @Inject constructor(
                         val total = SystemClock.elapsedRealtime() - started
                         repository.saveResult(id, event.utterances, total)
                         autoExport(id)
+                        // LLM — уже после сохранения и экспорта: на время до результата не влияет
+                        if (config.useLlm) summarize(id, event.utterances) { f -> publish(Stage.LLM, f, "Готовим сводку") }
                     }
                     is PipelineEvent.Failed -> throw event.error
                 }
@@ -177,6 +181,26 @@ class ProcessingManager @Inject constructor(
             withContext(NonCancellable) { repository.setStatus(id, SessionStatus.ERROR, CANCELLED_MESSAGE) }
         } catch (e: Throwable) {
             repository.setStatus(id, SessionStatus.ERROR, e.message ?: e.javaClass.simpleName)
+        }
+    }
+
+    private suspend fun summarize(
+        id: Long,
+        utterances: List<com.lapcevichme.meowscribe.domain.model.Utterance>,
+        onProgress: (Float) -> Unit,
+    ) {
+        if (!summarizer.isAvailable()) return
+        try {
+            val s = summarizer.summarize(utterances, onProgress) ?: return
+            val text = buildString {
+                append(s.title)
+                s.bullets.forEach { append("\n• ").append(it) }
+            }
+            repository.setSummary(id, text)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            android.util.Log.w("ProcessingManager", "summary failed", e)
         }
     }
 
