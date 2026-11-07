@@ -69,5 +69,7 @@ dependencies {
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
     implementation(libs.androidx.graphics.shapes)
+    implementation(libs.sherpa.onnx)
+    implementation(project(":llama"))
     implementation(libs.kotlinx.serialization.json)
 }

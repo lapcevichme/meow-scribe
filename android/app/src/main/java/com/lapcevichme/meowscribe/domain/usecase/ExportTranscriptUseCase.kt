@@ -24,7 +24,8 @@ class ExportTranscriptUseCase @Inject constructor(
 
     companion object {
         fun exportFileName(title: String): String {
-            val base = title.substringBeforeLast('.', title)
+            // Отрезаем только настоящее расширение (".m4a"), а не точку внутри названия ("7 нояб., 17:21").
+            val base = title.replace(Regex("\\.[A-Za-z0-9]{1,5}$"), "")
                 .replace(Regex("[\\\\/:*?\"<>|]"), "_")
                 .trim()
                 .ifEmpty { "transcript" }

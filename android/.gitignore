@@ -16,3 +16,6 @@ local.properties
 
 /.idea
 /app/src/main/assets/models/
+/app/src/androidTest/assets/
+/llama/third_party/
+/llama/build/

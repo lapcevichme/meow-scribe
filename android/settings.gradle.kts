@@ -19,8 +19,13 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // sherpa-onnx публикует Android AAR только на JitPack. Остальные зависимости туда не ходят.
+        maven("https://jitpack.io") {
+            content { includeGroup("com.github.k2-fsa.sherpa-onnx") }
+        }
     }
 }
 
 rootProject.name = "MeowScribe"
 include(":app")
+include(":llama")

@@ -20,6 +20,7 @@
 | `docs/telegram_chat.md` | Q&A с организаторами. Уточнения, которых нет в ТЗ |
 | `docs/solution_concept.md` | Исходная концепция: пайплайн, дизайн M3 Expressive, UX-фичи. Частично устарела, актуальные решения в `team_plan.md` |
 | `docs/team_plan.md` | **Актуальный план**: роли, контракт между приложением и пайплайном, задачи, тайм-план, целевое железо |
+| `docs/android_ml_notes.md` | Замеры моделей на устройстве (эмулятор жюри), как подключены sherpa-onnx и llama.cpp, советы по пайплайну |
 
 Если решения в документах противоречат друг другу, приоритет такой: `team_plan.md` → `telegram_chat.md` → `nuclear_it_hack.md` → `solution_concept.md`.
 
@@ -59,7 +60,10 @@ meow-scribe/
 ├── CLAUDE.md
 ├── docs/        # кейс, план, Q&A
 ├── android/     # Gradle-проект (открывать в Android Studio именно эту папку)
-└── bench/       # Python-стенд на sherpa-onnx, eval-скрипты, fetch_models.sh (oatis123)
+│   ├── app/     # приложение
+│   └── llama/   # модуль llama.cpp: CMake + JNI + LlamaModel.kt; исходники llama.cpp качаются в third_party/ при сборке
+├── scripts/     # fetch_models.sh — скачивает веса в assets
+└── bench/       # Python-стенд на sherpa-onnx, eval-скрипты (oatis123)
 ```
 
 ## Архитектура Android-приложения
@@ -107,6 +111,24 @@ presentation/
 
 ### ML-модели (веса)
 
-- Лежат в `android/app/src/main/assets/models/{vad,asr,diarization,llm}/`. В git их нет, скачиваются скриптом `bench/fetch_models.sh`. Python-стенд берёт веса оттуда же.
-- sherpa-onnx читает модели прямо из `AssetManager`. `.gguf` для llama.cpp при первом запуске копируется в `filesDir`.
-- Все пути к весам задаются только в `data/models/ModelLocator`.
+- Лежат в `android/app/src/main/assets/models/{vad,asr,diarization,llm}/`. В git их нет, скачиваются скриптом `scripts/fetch_models.sh`. Python-стенд берёт веса оттуда же.
+- sherpa-onnx читает модели прямо из `AssetManager`. `.gguf` для llama.cpp при первом запуске копируется в `filesDir` (`ModelLocator.llmFile()`).
+- Все пути к весам задаются только в `data/models/ModelLocator`. Меняем их синхронно со скриптом.
+- sherpa-onnx подключён AAR с JitPack (`libs.versions.toml` → `sherpaOnnx`), в нём Kotlin API `com.k2fsa.sherpa.onnx.*`.
+- LLM: `com.lapcevichme.meowscribe.llama.LlamaModel` (load → chatPrompt → generate, жадная генерация, отмена). Нативная часть всегда собирается в Release; NDK r28 и CMake 3.22.1 Gradle ставит сам.
+- Образы эмулятора с 16 КБ страницами: все `.so` должны быть выровнены под 16 КБ (NDK r28+ делает это сам).
+
+### Smoke-тесты на устройстве
+
+Проверяют, что нативные библиотеки грузятся на этой архитектуре, и печатают время загрузки, RTF и RSS:
+
+```bash
+./scripts/fetch_models.sh
+cd android && ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
+adb install -r app/build/outputs/apk/debug/app-debug.apk && adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+adb shell am instrument -w -e class com.lapcevichme.meowscribe.ModelsSmokeTest com.lapcevichme.meowscribe.test/androidx.test.runner.AndroidJUnitRunner
+adb push model.gguf /data/local/tmp/smoke.gguf   # для LlamaSmokeTest
+adb shell am instrument -w -e class com.lapcevichme.meowscribe.LlamaSmokeTest com.lapcevichme.meowscribe.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Эмулятор, похожий на стенд жюри: x86_64, 4 ГБ RAM (AVD `Jury_4GB` на ноуте Михаила).
