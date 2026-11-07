@@ -69,6 +69,9 @@ EMB = {
     "resnet34": "wespeaker_en_voxceleb_resnet34_LM",
     "titanet": "nemo_en_titanet_small",
     "campplus_en": "wespeaker_en_voxceleb_CAM++",
+    "campplus_vox": "3dspeaker_speech_campplus_sv_en_voxceleb_16k",
+    "titanet_large": "nemo_en_titanet_large",
+    "eres2net_large": "3dspeaker_speech_eres2net_large_sv_zh-cn_3dspeaker_16k",
 }
 
 
@@ -78,6 +81,7 @@ class Config:
     asr_en: str = "parakeet110"
     language: str = "ru"            # ru | en | auto
     emb: str = "prod"               # prod = assets/diarization/embedding.onnx (CAM++ zh_en)
+    seg: str = "prod"               # prod = assets/diarization/segmentation.onnx (pyannote 3.0) | reverb | путь
     num_speakers: int | None = None
     cluster_threshold: float = 0.8
     min_on: float = 0.3
@@ -90,9 +94,13 @@ class Config:
     sent_gap: float = 0.4           # пауза после конца предложения → новая реплика
     smooth_run: float = 1.0         # куски другого спикера короче — внутри предложения отдаются основному (0 = выкл)
     bc_max: float = 1.5             # поддакивания короче — отдельными репликами (0 = выкл)
-    sent_min: float = 1.5           # предложения от этой длины сверяются по голосу (0 = выкл)
+    sent_min: float = 1.0           # предложения от этой длины сверяются по голосу (0 = выкл)
     sent_margin: float = 0.1        # перевес косинуса, с которого предложение переходит к другому спикеру
     sent_major: float = 0.1         # переходят только к спикерам с такой долей речи
+    sent_cluster_min: float = 1.5   # предложения от этой длины кластеризуются → центроиды спикеров
+    sent_cluster_max: int = 300     # не больше стольких самых длинных предложений в кластеризации
+    sent_cluster_balance: float = 0.5  # кластер набрал меньше такой доли предложений своей метки → центроиды по сегментам
+    sent_fragment_sim: float = 0.6  # мелкий спикер с голосом ближе этого к основному — обрывок, его предложения переносим
     merge: str = "words"            # words | segments
     recluster_sim: float = 0.0      # 0 = выкл.; склейка спикеров с косинусом эмбеддингов > порога
     min_spk_sec: float = 6.0        # спикеры с речью меньше (но не больше 15% всей речи) — к самому похожему
@@ -203,14 +211,22 @@ def run_asr(rec, pcm, chunks, on_progress=None) -> list[Word]:
     return words
 
 
+def _seg_model(cfg: Config) -> str:
+    if cfg.seg == "reverb":
+        return str(CACHE / "seg/sherpa-onnx-reverb-diarization-v1/model.onnx")
+    if cfg.seg != "prod":
+        return cfg.seg
+    if (ASSETS / "diarization/segmentation.onnx").exists():
+        return str(ASSETS / "diarization/segmentation.onnx")
+    return str(CACHE / "seg/sherpa-onnx-pyannote-segmentation-3-0/model.onnx")
+
+
 def diarize(pcm, cfg: Config):
     c = sherpa_onnx.OfflineSpeakerDiarizationConfig(
         segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
             pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
                 window_shift_ratio=cfg.win_shift,
-                model=str(ASSETS / "diarization/segmentation.onnx")
-                if (ASSETS / "diarization/segmentation.onnx").exists()
-                else str(CACHE / "seg/sherpa-onnx-pyannote-segmentation-3-0/model.onnx")),
+                model=_seg_model(cfg)),
             num_threads=cfg.threads),
         embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(
             model=(str(ASSETS / "diarization/embedding.onnx") if cfg.emb == "prod"
@@ -423,9 +439,75 @@ def extract_backchannels(words: list[Word], max_sec: float):
     return [w for n, w in enumerate(words) if n not in drop], extra
 
 
+def _ahc_complete(x: np.ndarray, k: int) -> list[int]:
+    """Иерархическая кластеризация, полная связь, косинусное расстояние, до k кластеров.
+    x — нормированные строки. Возвращает представителя кластера для каждой строки. 1:1 с SentenceRelabeler.cluster."""
+    n = len(x)
+    d = (1.0 - x @ x.T).astype(np.float64)
+    np.fill_diagonal(d, np.inf)
+    rep = list(range(n))
+    active = np.ones(n, dtype=bool)
+    for _ in range(max(0, n - k)):
+        best, bi, bj = np.inf, -1, -1
+        idx = np.flatnonzero(active)
+        for a, i in enumerate(idx):
+            row = d[i, idx[a + 1:]]
+            if len(row) and row.min() < best:
+                j = int(np.argmin(row))
+                best, bi, bj = row[j], i, idx[a + 1 + j]
+        if bi < 0:
+            break
+        m = np.maximum(d[bi], d[bj])
+        d[bi], d[:, bi] = m, m
+        d[bi, bi] = np.inf
+        active[bj] = False
+        rep = [bi if r == bj else r for r in rep]
+    return rep
+
+
+def _cluster_centroids(units, dur, cfg: Config):
+    """Центроиды спикеров по кластерам длинных предложений. units: [(lo, hi, emb, sec, label)].
+    Кластеров столько, сколько крупных спикеров у диаризации; имена — метки диаризации, жадно по
+    наибольшей общей длительности. None — кластеризовать нечего или кластеры не сходятся с диаризацией
+    по объёму (обычно выделен редкий третий голос, а два основных слиты — ru_06: DER 18 → 45%)."""
+    total = sum(dur.values()) or 1.0
+    major = sorted(k for k in dur if dur[k] / total >= cfg.sent_major)
+    # предложения мелких спикеров в кластеризацию не берём: их голос размывает кластеры основных
+    pool = sorted((u for u in units if u[3] >= cfg.sent_cluster_min and u[4] in major),
+                  key=lambda u: -u[3])[:cfg.sent_cluster_max]
+    if len(major) < 2 or len(pool) <= len(major):
+        return None
+    rep = _ahc_complete(np.stack([u[2] for u in pool]), len(major))
+    keys = sorted({u[4] for u in pool} | set(major))
+    reps = sorted(set(rep))
+    ov = {}
+    for u, r in zip(pool, rep):
+        ov[(r, u[4])] = ov.get((r, u[4]), 0.0) + u[3]
+    pairs = sorted(((ov.get((r, k), 0.0), r, k) for r in reps for k in keys), key=lambda t: (-t[0], t[1], t[2]))
+    name, used = {}, set()
+    for _, r, k in pairs:
+        if r not in name and k not in used:
+            name[r] = k
+            used.add(k)
+    cl, lab = {}, {}
+    for u, r in zip(pool, rep):
+        cl[name[r]] = cl.get(name[r], 0.0) + u[3]
+        lab[u[4]] = lab.get(u[4], 0.0) + u[3]
+    if min((cl[k] / lab[k] for k in cl if k in lab), default=1.0) < cfg.sent_cluster_balance:
+        return None
+    acc = {}
+    for u, r in zip(pool, rep):
+        acc[name[r]] = acc.get(name[r], 0.0) + u[2] * u[3]
+    return {k: v / (np.linalg.norm(v) + 1e-9) for k, v in acc.items()}
+
+
 def relabel_sentences(pcm, words: list[Word], segs, cfg: Config) -> None:
     """Предложение целиком — спикеру с ближайшим по CAM++ центроидом, если перевес ≥ sent_margin.
-    На быстром диалоге диаризация склеивает реплики разных людей в один сегмент. 1:1 с SentenceRelabeler."""
+
+    На быстром диалоге диаризация склеивает реплики разных людей в один сегмент. Центроиды берём
+    из кластеризации самих предложений (каждое сказал один человек — чище, чем окна диаризации),
+    если не вышло — по сегментам диаризации. 1:1 с SentenceRelabeler.
+    """
     if cfg.sent_min <= 0:
         return
     dur: dict[int, float] = {}
@@ -436,15 +518,8 @@ def relabel_sentences(pcm, words: list[Word], segs, cfg: Config) -> None:
     ranges = [(lo, hi) for lo, hi in sentences(words) if words[hi - 1].end - words[lo].start >= cfg.sent_min]
     if not ranges:
         return
-    cen, _ = speaker_embeddings(pcm, segs, cfg)
-    if len(cen) < 2:
-        return
-    total = sum(dur.values())
-    major = sorted(k for k in cen if dur.get(k, 0.0) / total >= cfg.sent_major)
-    if not major:
-        return
     ext = _extractor(cfg)
-    new = []
+    units = []
     for lo, hi in ranges:
         a, b = int(words[lo].start * SR), int(words[hi - 1].end * SR)
         st = ext.create_stream()
@@ -453,9 +528,28 @@ def relabel_sentences(pcm, words: list[Word], segs, cfg: Config) -> None:
         if not ext.is_ready(st):
             continue
         v = np.array(ext.compute(st))
-        v /= np.linalg.norm(v) + 1e-9
-        cur = main_speaker(words, lo, hi)
-        best = max(major, key=lambda k: float(cen[k] @ v))
+        units.append((lo, hi, v / (np.linalg.norm(v) + 1e-9), words[hi - 1].end - words[lo].start,
+                      main_speaker(words, lo, hi)))
+    cen = _cluster_centroids(units, dur, cfg)
+    if cen is None:
+        cen, _ = speaker_embeddings(pcm, segs, cfg)
+    if len(cen) < 2:
+        return
+    total = sum(dur.values())
+    targets = sorted(k for k in cen if dur.get(k, 0.0) / total >= cfg.sent_major) or sorted(cen)
+    new = []
+    # мелкий спикер без центроида кластера: если его голос похож на кого-то из основных — это обрывок
+    # (диаризация отрезала кусок человека), его предложения переносим; иначе живой человек — не трогаем
+    acc = {}
+    for _, _, v, sec, cur in units:
+        if cur not in cen:
+            acc[cur] = acc.get(cur, 0.0) + v * sec
+    frag = {k for k, v in acc.items()
+            if max(float(c @ (v / (np.linalg.norm(v) + 1e-9))) for c in cen.values()) >= cfg.sent_fragment_sim}
+    for lo, hi, v, _, cur in units:
+        if cur not in cen and cur not in frag:
+            continue
+        best = max(targets, key=lambda k: float(cen[k] @ v))
         cur_sim = float(cen[cur] @ v) if cur in cen else -1.0
         if best != cur and float(cen[best] @ v) - cur_sim >= cfg.sent_margin:
             new.append((lo, hi, best))

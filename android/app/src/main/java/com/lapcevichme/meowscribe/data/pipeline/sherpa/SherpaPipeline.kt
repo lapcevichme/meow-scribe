@@ -338,15 +338,25 @@ class SherpaPipeline @Inject constructor(
         if (ranges.isEmpty()) return words
         val extractor = createExtractor()
         try {
-            val centroids = speakerEmbeddings(extractor, pcm, segments, durations.keys)
-            if (centroids.size < 2) return words
-            val embeddings = ranges.mapIndexed { i, r ->
+            val units = ranges.mapIndexedNotNull { i, r ->
                 ensureActive()
                 if (i % 16 == 0) send(PipelineEvent.Progress(Stage.MERGE, i.toFloat() / ranges.size, "Сверяем голоса"))
-                embed(extractor, pcm, words[r.first].start, words[r.last].end)
+                embed(extractor, pcm, words[r.first].start, words[r.last].end)?.let { v ->
+                    SentenceRelabeler.Unit(r, v, words[r.last].end - words[r.first].start, WordMerger.mainSpeaker(words, r))
+                }
             }
-            val out = SentenceRelabeler.relabel(words, ranges, embeddings, centroids, durations, t.sentenceMargin, t.sentenceMajorShare)
-            Log.i(TAG, "sentences: ${ranges.size} сверено, переназначено ${ranges.count { out[it.first].speaker != words[it.first].speaker }}")
+            val clustered = SentenceRelabeler.clusterCentroids(
+                units, durations, t.sentenceMajorShare, t.sentenceClusterMinSec, t.sentenceClusterMax, t.sentenceClusterBalance,
+            )
+            val centroids = clustered ?: speakerEmbeddings(extractor, pcm, segments, durations.keys)
+            val out = SentenceRelabeler.relabel(
+                words, units, centroids, durations, t.sentenceMargin, t.sentenceMajorShare, t.sentenceFragmentSim,
+            )
+            Log.i(
+                TAG,
+                "sentences: ${units.size} сверено, центроиды ${if (clustered != null) "по кластерам" else "по сегментам"}, " +
+                    "переназначено ${units.count { out[it.range.first].speaker != words[it.range.first].speaker }}",
+            )
             return out
         } finally {
             extractor.release()
@@ -476,11 +486,25 @@ class SherpaPipeline @Inject constructor(
         /** Поддакивания короче этого — отдельными репликами, см. WordMerger.extractBackchannels. 0 — выкл. */
         val backchannelMaxSec: Float = 1.5f,
         /** Предложения от этой длины сверяются по голосу, см. [SentenceRelabeler]. 0 — выкл. */
-        val sentenceMinSec: Float = 1.5f,
+        val sentenceMinSec: Float = 1f,
         /** Перевес косинуса к другому спикеру, с которого предложение переходит к нему. */
         val sentenceMargin: Float = 0.1f,
         /** Предложения отдаём только спикерам с такой долей речи, а не мелким обрывкам кластеризации. */
         val sentenceMajorShare: Float = 0.1f,
+        /** Предложения от этой длины кластеризуются, из кластеров — центроиды спикеров. */
+        val sentenceClusterMinSec: Float = 1.5f,
+        /** Не больше стольких самых длинных предложений в кластеризации (O(n³), на часовой записи их ~1000). */
+        val sentenceClusterMax: Int = 300,
+        /**
+         * Кластер должен набрать хотя бы такую долю длительности предложений с его меткой диаризации, иначе
+         * центроиды по сегментам. Стенд ru_06: кластеризация выделила третьего (0.19) — DER 18 → 45% без проверки.
+         */
+        val sentenceClusterBalance: Float = 0.5f,
+        /**
+         * Мелкий спикер (< sentenceMajorShare) без центроида кластера: голос ближе этого к основному — обрывок,
+         * его предложения переносим; иначе живой человек, не трогаем. Стенд: 0.5 путает живых (ru_multi), 0.7 — мимо обрывков (AMI).
+         */
+        val sentenceFragmentSim: Float = 0.6f,
     ) {
         companion object {
             // стенд (ru): FAST — DER 8.9%, RTF ×0.66; ACCURATE — DER 6.9%. WER одинаковый.

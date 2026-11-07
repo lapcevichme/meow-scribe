@@ -145,7 +145,72 @@ class WordMergerTest {
             floatArrayOf(0.7f, 0.714f, 0f), // перевес 0.014 < margin → остаётся
             floatArrayOf(0.1f, 0f, 0.995f), // ближе всего к мелкому 3 — ему не отдаём
         )
-        val out = SentenceRelabeler.relabel(words, ranges, embeddings, centroids, durations, margin = 0.1f, majorShare = 0.1f)
+        val units = ranges.mapIndexed { i, r -> SentenceRelabeler.Unit(r, embeddings[i], 1.6f, 1) }
+        val out = SentenceRelabeler.relabel(words, units, centroids, durations, margin = 0.1f, majorShare = 0.1f, fragmentSim = 0.6f)
         assertEquals(listOf(2, 1, 1, 1, 1), out.map { it.speaker })
+    }
+
+    @Test
+    fun `complete linkage clustering groups nearby voices`() {
+        val x = listOf(
+            floatArrayOf(1f, 0f), floatArrayOf(0.99f, 0.14f), floatArrayOf(0.98f, -0.2f),
+            floatArrayOf(0f, 1f), floatArrayOf(0.14f, 0.99f),
+        ).map { SentenceRelabeler.normalize(it) }
+        val rep = SentenceRelabeler.cluster(x, k = 2)
+        assertEquals(rep[0], rep[1])
+        assertEquals(rep[0], rep[2])
+        assertEquals(rep[3], rep[4])
+        assert(rep[0] != rep[3])
+    }
+
+    @Test
+    fun `cluster centroids are named after the diarization label they overlap most`() {
+        val a = floatArrayOf(1f, 0f)
+        val b = floatArrayOf(0f, 1f)
+        // диаризация ошиблась: одно предложение голоса b подписано спикером 7
+        val units = listOf(
+            SentenceRelabeler.Unit(0..0, a, 3f, 7), SentenceRelabeler.Unit(1..1, a, 2f, 7),
+            SentenceRelabeler.Unit(2..2, b, 3f, 9), SentenceRelabeler.Unit(3..3, b, 2f, 7),
+            SentenceRelabeler.Unit(4..4, b, 2f, 9),
+            SentenceRelabeler.Unit(5..5, b, 1f, 9), // короче clusterMinSec — в кластеризацию не идёт
+        )
+        val cen = SentenceRelabeler.clusterCentroids(units, mapOf(7 to 7f, 9 to 6f), 0.1f, clusterMinSec = 1.5f, maxUnits = 300, minBalance = 0.5f)!!
+        assertEquals(setOf(7, 9), cen.keys)
+        assertEquals(1f, cen.getValue(7)[0], 1e-4f)
+        assertEquals(1f, cen.getValue(9)[1], 1e-4f)
+        val words = (0..5).map { w("слово.", it.toFloat(), it + 0.9f, units[it].speaker) }
+        val out = SentenceRelabeler.relabel(words, units, cen, mapOf(7 to 7f, 9 to 6f), margin = 0.1f, majorShare = 0.1f, fragmentSim = 0.6f)
+        assertEquals(listOf(7, 7, 9, 9, 9, 9), out.map { it.speaker })
+        assertEquals(null, SentenceRelabeler.clusterCentroids(units, mapOf(7 to 10f), 0.1f, 1.5f, 300, 0.5f))
+    }
+
+    @Test
+    fun `minor speaker without a cluster centroid keeps its sentences unless it is a fragment`() {
+        val words = listOf(w("Раз.", 0f, 1.5f, 5), w("Два.", 2f, 3.5f, 1), w("Три.", 4f, 5.5f, 6))
+        val units = listOf(
+            SentenceRelabeler.Unit(0..0, floatArrayOf(0f, 0f, 1f), 1.5f, 5), // мелкий 5: свой голос — живой человек
+            SentenceRelabeler.Unit(1..1, floatArrayOf(1f, 0f, 0f), 1.5f, 1),
+            SentenceRelabeler.Unit(2..2, floatArrayOf(0.99f, 0.14f, 0f), 1.5f, 6), // мелкий 6: голос спикера 2 — обрывок
+        )
+        val centroids = mapOf(1 to floatArrayOf(0f, 1f, 0f), 2 to floatArrayOf(1f, 0f, 0f))
+        val durations = mapOf(1 to 50f, 2 to 40f, 5 to 3f, 6 to 3f)
+        val out = SentenceRelabeler.relabel(words, units, centroids, durations, 0.1f, 0.1f, fragmentSim = 0.6f)
+        assertEquals(listOf(5, 2, 2), out.map { it.speaker })
+    }
+
+    @Test
+    fun `clusters that disagree with diarization in volume are rejected`() {
+        // два основных голоса похожи, кластеризация сливает их, а в отдельный кластер уходит редкий третий
+        val a = SentenceRelabeler.normalize(floatArrayOf(1f, 0f, 0f))
+        val b = SentenceRelabeler.normalize(floatArrayOf(0.8f, 0.6f, 0f))
+        val c = floatArrayOf(0f, 0f, 1f)
+        val units = listOf(
+            SentenceRelabeler.Unit(0..0, a, 3f, 7), SentenceRelabeler.Unit(1..1, a, 3f, 7),
+            SentenceRelabeler.Unit(2..2, b, 3f, 9), SentenceRelabeler.Unit(3..3, b, 3f, 9),
+            SentenceRelabeler.Unit(4..4, c, 2f, 7),
+        )
+        val durations = mapOf(7 to 8f, 9 to 6f)
+        assertEquals(null, SentenceRelabeler.clusterCentroids(units, durations, 0.1f, 1.5f, 300, minBalance = 0.5f))
+        assert(SentenceRelabeler.clusterCentroids(units, durations, 0.1f, 1.5f, 300, minBalance = 0f) != null)
     }
 }
