@@ -69,3 +69,46 @@ data class SpeakerEntity(
 
 /** Проекция для поиска по тексту расшифровок. */
 data class SessionText(val sessionId: Long, val text: String)
+
+/** Общая база голосов. embedding — нормированный float32 little-endian. */
+@Entity(tableName = "voice_profiles")
+data class VoiceProfileEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    val embedding: ByteArray,
+    val samples: Int,
+    val createdAt: Long,
+    val updatedAt: Long,
+)
+
+/** Профиль без вектора — для списка в настройках. */
+data class VoiceProfileRow(val id: Long, val name: String, val samples: Int, val updatedAt: Long)
+
+/** Какой спикер записи узнан как сохранённый голос (или привязан вручную, similarity = null). */
+@Entity(
+    tableName = "session_voices",
+    primaryKeys = ["sessionId", "speakerId"],
+    foreignKeys = [
+        ForeignKey(
+            entity = SessionEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["sessionId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+        ForeignKey(
+            entity = VoiceProfileEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["profileId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index("profileId")],
+)
+data class SessionVoiceEntity(
+    val sessionId: Long,
+    val speakerId: String,
+    val profileId: Long,
+    val similarity: Float?,
+)
+
+data class SessionVoiceRow(val speakerId: String, val profileId: Long, val name: String, val similarity: Float?)

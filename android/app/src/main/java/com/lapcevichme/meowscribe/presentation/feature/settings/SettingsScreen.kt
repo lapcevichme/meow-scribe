@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -39,6 +40,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lapcevichme.meowscribe.R
 import com.lapcevichme.meowscribe.domain.model.Profile
+import com.lapcevichme.meowscribe.domain.voice.VoiceProfile
 import com.lapcevichme.meowscribe.presentation.components.BackTopBar
 import com.lapcevichme.meowscribe.presentation.components.label
 import com.lapcevichme.meowscribe.presentation.components.languageLabel
@@ -49,6 +51,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val config by viewModel.config.collectAsStateWithLifecycle()
+    val voiceProfiles by viewModel.voiceProfiles.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val version = remember {
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull()
@@ -129,6 +132,15 @@ fun SettingsScreen(
                 }
             }
 
+            Section("Голоса") {
+                if (voiceProfiles.isEmpty()) {
+                    Hint("Пока пусто. В расшифровке нажмите на спикера, введите имя и отметьте «Запомнить голос» — в следующих записях приложение подпишет его само.")
+                } else {
+                    Hint("Узнаём этих людей в новых записях. Голоса хранятся только на телефоне.")
+                    voiceProfiles.forEach { VoiceRow(it, onDelete = { viewModel.deleteVoice(it.id) }) }
+                }
+            }
+
             Surface(
                 color = MaterialTheme.colorScheme.secondaryContainer,
                 shape = RoundedCornerShape(28.dp),
@@ -172,6 +184,44 @@ private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) 
             content()
         }
     }
+}
+
+@Composable
+private fun VoiceRow(profile: VoiceProfile, onDelete: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            Modifier.padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(painterResource(R.drawable.ic_voice), contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Column(Modifier.weight(1f)) {
+                Text(profile.name, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    pluralRecordings(profile.samples),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            IconButton(onClick = onDelete) {
+                Icon(painterResource(R.drawable.ic_delete), contentDescription = "Удалить голос «${profile.name}»")
+            }
+        }
+    }
+}
+
+private fun pluralRecordings(n: Int): String {
+    val word = when {
+        n % 100 in 11..14 -> "записей"
+        n % 10 == 1 -> "запись"
+        n % 10 in 2..4 -> "записи"
+        else -> "записей"
+    }
+    return "$n $word"
 }
 
 @Composable

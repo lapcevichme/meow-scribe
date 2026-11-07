@@ -13,12 +13,17 @@ import com.lapcevichme.meowscribe.domain.model.Session
 import com.lapcevichme.meowscribe.domain.model.SessionStatus
 import com.lapcevichme.meowscribe.domain.model.Utterance
 import com.lapcevichme.meowscribe.domain.repository.SessionRepository
+import com.lapcevichme.meowscribe.domain.repository.SpeakerEmbedder
+import com.lapcevichme.meowscribe.domain.repository.VoiceProfileRepository
 import com.lapcevichme.meowscribe.domain.usecase.ExportTranscriptUseCase
+import com.lapcevichme.meowscribe.domain.usecase.RememberVoiceUseCase
 import com.lapcevichme.meowscribe.domain.usecase.SplitUtteranceUseCase
+import com.lapcevichme.meowscribe.domain.voice.VoiceMatch
 import com.lapcevichme.meowscribe.presentation.components.speakerIndex
 import com.lapcevichme.meowscribe.presentation.navigation.TranscriptRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -45,6 +50,10 @@ sealed interface TranscriptUiState {
         /** Все спикеры записи в порядке номеров: speaker_1, speaker_2, … */
         val speakerIds: List<String>,
         val speakerNames: Map<String, String>,
+        /** Спикеры, узнанные по сохранённым голосам или привязанные вручную. */
+        val voices: Map<String, VoiceMatch> = emptyMap(),
+        /** Можно ли запоминать голоса (есть модель эмбеддингов). */
+        val canRememberVoice: Boolean = false,
     ) : TranscriptUiState
 }
 
@@ -67,7 +76,12 @@ class TranscriptViewModel @Inject constructor(
     private val repository: SessionRepository,
     private val export: ExportTranscriptUseCase,
     private val splitUtterance: SplitUtteranceUseCase,
+    private val rememberVoice: RememberVoiceUseCase,
+    private val voiceRepository: VoiceProfileRepository,
+    embedder: SpeakerEmbedder,
 ) : ViewModel() {
+
+    private val canRememberVoice = embedder.isAvailable
 
     val sessionId: Long = savedStateHandle.toRoute<TranscriptRoute>().sessionId
 
@@ -75,7 +89,8 @@ class TranscriptViewModel @Inject constructor(
         repository.observeSession(sessionId),
         repository.observeTranscript(sessionId),
         repository.observeSpeakerNames(sessionId),
-    ) { session, utterances, names ->
+        voiceRepository.observeMatches(sessionId),
+    ) { session, utterances, names, voices ->
         when {
             session == null -> TranscriptUiState.NotFound
             session.status != SessionStatus.DONE -> TranscriptUiState.NotReady(session.status)
@@ -84,9 +99,15 @@ class TranscriptViewModel @Inject constructor(
                 utterances = utterances,
                 speakerIds = utterances.map { it.speakerId }.distinct().sortedBy { speakerIndex(it) },
                 speakerNames = names,
+                voices = voices,
+                canRememberVoice = canRememberVoice,
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TranscriptUiState.Loading)
+
+    /** Спикер, чей голос сейчас запоминается (декодирование + эмбеддинг, несколько секунд). */
+    private val _voiceBusy = MutableStateFlow<String?>(null)
+    val voiceBusy: StateFlow<String?> = _voiceBusy.asStateFlow()
 
     private val _player = MutableStateFlow(PlayerUiState())
     val player: StateFlow<PlayerUiState> = _player.asStateFlow()
@@ -159,8 +180,45 @@ class TranscriptViewModel @Inject constructor(
         _player.update { it.copy(speed = next) }
     }
 
-    fun renameSpeaker(speakerId: String, name: String?) {
-        viewModelScope.launch { repository.renameSpeaker(sessionId, speakerId, name) }
+    fun renameSpeaker(speakerId: String, name: String?, remember: Boolean) {
+        val clean = name?.trim().orEmpty()
+        viewModelScope.launch {
+            val linked = (state.value as? TranscriptUiState.Content)?.voices?.get(speakerId)
+            if (clean.isEmpty()) {
+                repository.renameSpeaker(sessionId, speakerId, null)
+                voiceRepository.unlink(sessionId, speakerId)
+                return@launch
+            }
+            if (!remember) {
+                repository.renameSpeaker(sessionId, speakerId, clean)
+                // Переименовали узнанного спикера в кого-то другого — значит, узнали неверно.
+                if (linked != null && !linked.name.equals(clean, ignoreCase = true)) voiceRepository.unlink(sessionId, speakerId)
+                return@launch
+            }
+            _voiceBusy.value = speakerId
+            val message = try {
+                when (val r = rememberVoice(sessionId, speakerId, clean)) {
+                    is RememberVoiceUseCase.Result.Created -> "Голос «${r.name}» запомнен"
+                    is RememberVoiceUseCase.Result.Updated -> "Голос «${r.name}» уточнён: записей ${r.samples}"
+                    RememberVoiceUseCase.Result.TooLittleSpeech -> {
+                        repository.renameSpeaker(sessionId, speakerId, clean)
+                        "Имя сохранено, но речи слишком мало, чтобы запомнить голос"
+                    }
+                    RememberVoiceUseCase.Result.NoModel -> {
+                        repository.renameSpeaker(sessionId, speakerId, clean)
+                        "Модель голосов не найдена"
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                repository.renameSpeaker(sessionId, speakerId, clean)
+                "Не удалось запомнить голос: ${e.message}"
+            } finally {
+                _voiceBusy.value = null
+            }
+            _events.send(TranscriptEvent.Message(message))
+        }
     }
 
     fun editUtterance(index: Int, text: String, speakerId: String) {

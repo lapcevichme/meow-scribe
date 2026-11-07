@@ -13,6 +13,7 @@ import com.lapcevichme.meowscribe.domain.repository.AudioSource
 import com.lapcevichme.meowscribe.domain.repository.SessionRepository
 import com.lapcevichme.meowscribe.domain.repository.TranscriptExporter
 import com.lapcevichme.meowscribe.domain.usecase.ExportTranscriptUseCase
+import com.lapcevichme.meowscribe.domain.usecase.RecognizeVoicesUseCase
 import com.lapcevichme.meowscribe.service.ProcessingService
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
@@ -44,6 +45,7 @@ class ProcessingManager @Inject constructor(
     private val audioSource: AudioSource,
     private val pipeline: TranscriptionPipeline,
     private val exporter: TranscriptExporter,
+    private val recognizeVoices: RecognizeVoicesUseCase,
 ) : ProcessingQueue {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -153,6 +155,17 @@ class ProcessingManager @Inject constructor(
                         publish(lastStage, _progress.value[id]?.stageFraction ?: 0f, _progress.value[id]?.message)
                     }
                     is PipelineEvent.Done -> {
+                        // Сверка с сохранёнными голосами. Пока база пуста, ничего не считается и RTF не страдает.
+                        if (recognizeVoices.isNeeded()) {
+                            publish(lastStage, 1f, "Сверяем голоса с сохранёнными")
+                            try {
+                                recognizeVoices(id, audio.pcm, event.utterances)
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                // Не узнали голоса — не повод терять расшифровку.
+                            }
+                        }
                         val total = SystemClock.elapsedRealtime() - started
                         repository.saveResult(id, event.utterances, total)
                         autoExport(id)

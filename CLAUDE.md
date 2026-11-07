@@ -77,7 +77,8 @@ domain/                      # чистый Kotlin, без android.*
 ├── pipeline/                # TranscriptionPipeline, PipelineEvent, Stage, Stats — КОНТРАКТ
 ├── repository/              # интерфейсы: SessionRepository, AudioSource, TranscriptExporter
 ├── processing/              # ProcessingQueue — очередь обработки
-└── usecase/                 # только где есть логика (ProcessAudio, Export)
+├── voice/                   # общая база голосов: модели, VoiceMath (косинус, сопоставление)
+└── usecase/                 # только где есть логика (ProcessAudio, Export, Remember/RecognizeVoices)
 data/
 ├── pipeline/fake/           # FakePipeline — для разработки UI
 ├── pipeline/sherpa/         # SherpaPipeline: VAD, диаризация, ASR, склейка (oatis123)
@@ -88,6 +89,7 @@ data/
 ├── export/                  # JSON (строгая схема), TXT, SRT
 ├── models/                  # ModelLocator — пути к весам, копирование .gguf из assets
 ├── processing/              # ProcessingManager — очередь и прогресс
+├── voice/                   # эмбеддинги голоса (CAM++ из sherpa) и база голосов в Room
 └── repository/              # реализации интерфейсов domain
 service/                     # Foreground Service: обработка и запись с микрофона
 di/                          # Hilt-модули

@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -40,6 +41,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonGroupDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -78,6 +81,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -95,6 +99,7 @@ import com.lapcevichme.meowscribe.R
 import com.lapcevichme.meowscribe.domain.model.SessionStatus
 import com.lapcevichme.meowscribe.domain.model.Utterance
 import com.lapcevichme.meowscribe.domain.usecase.ExportTranscriptUseCase
+import com.lapcevichme.meowscribe.domain.voice.VoiceMatch
 import com.lapcevichme.meowscribe.presentation.components.BackTopBar
 import com.lapcevichme.meowscribe.presentation.components.SpeakerAvatar
 import com.lapcevichme.meowscribe.presentation.components.SpeakerShape
@@ -107,6 +112,7 @@ import com.lapcevichme.meowscribe.presentation.components.speakerIndex
 import com.lapcevichme.meowscribe.presentation.components.speakerInitial
 import com.lapcevichme.meowscribe.presentation.components.speakerStyle
 import java.util.Locale
+import kotlin.math.roundToInt
 
 @Composable
 fun TranscriptScreen(
@@ -115,6 +121,7 @@ fun TranscriptScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val player = viewModel.player.collectAsStateWithLifecycle()
+    val voiceBusy by viewModel.voiceBusy.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
 
@@ -153,6 +160,7 @@ fun TranscriptScreen(
                 is TranscriptUiState.Content -> TranscriptBody(
                     content = s,
                     player = player,
+                    voiceBusy = voiceBusy,
                     onSeek = viewModel::seekTo,
                     onRename = viewModel::renameSpeaker,
                     onEdit = viewModel::editUtterance,
@@ -199,8 +207,9 @@ private sealed interface Row {
 private fun TranscriptBody(
     content: TranscriptUiState.Content,
     player: State<PlayerUiState>,
+    voiceBusy: String?,
     onSeek: (Long, Boolean) -> Unit,
-    onRename: (String, String?) -> Unit,
+    onRename: (String, String?, Boolean) -> Unit,
     onEdit: (Int, String, String) -> Unit,
     onSplit: (Int, String, Int, String) -> Unit,
     onCopy: (String) -> Unit,
@@ -240,7 +249,7 @@ private fun TranscriptBody(
     ) {
         items(rows.size, key = { rows[it].key }) { i ->
             when (val row = rows[i]) {
-                Row.Header -> TranscriptHeader(content, ::nameOf, onRenameClick = { renaming = it })
+                Row.Header -> TranscriptHeader(content, ::nameOf, voiceBusy, onRenameClick = { renaming = it })
                 is Row.GroupHeader -> GroupHeader(
                     speakerId = row.group.speakerId,
                     name = nameOf(row.group.speakerId),
@@ -269,8 +278,10 @@ private fun TranscriptBody(
         RenameDialog(
             current = content.speakerNames[id].orEmpty(),
             placeholder = defaultSpeakerName(id),
+            match = content.voices[id],
+            canRemember = content.canRememberVoice,
             onDismiss = { renaming = null },
-            onSave = { onRename(id, it); renaming = null },
+            onSave = { name, remember -> onRename(id, name, remember); renaming = null },
         )
     }
     editing?.let { index ->
@@ -319,6 +330,7 @@ private fun activeUtterance(utterances: List<Utterance>, positionMs: Long): Int 
 private fun TranscriptHeader(
     content: TranscriptUiState.Content,
     nameOf: (String) -> String,
+    voiceBusy: String?,
     onRenameClick: (String) -> Unit,
 ) {
     val s = content.session
@@ -353,13 +365,38 @@ private fun TranscriptHeader(
                     ) {
                         SpeakerShape(speakerStyle(speakerIndex(id)), size = 24.dp)
                         Text(nameOf(id), style = MaterialTheme.typography.labelLarge)
-                        Icon(
-                            painterResource(R.drawable.ic_edit),
-                            contentDescription = "Переименовать",
-                            modifier = Modifier.size(14.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        when {
+                            voiceBusy == id -> CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                            content.voices[id] != null -> Icon(
+                                painterResource(R.drawable.ic_voice),
+                                contentDescription = "Голос сохранён",
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                            else -> Icon(
+                                painterResource(R.drawable.ic_edit),
+                                contentDescription = "Переименовать",
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
+                }
+            }
+        }
+        val recognized = content.voices.values.filter { it.similarity != null }.sortedBy { speakerIndex(it.speakerId) }
+        if (recognized.isNotEmpty()) {
+            Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = RoundedCornerShape(20.dp)) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(painterResource(R.drawable.ic_voice), contentDescription = null)
+                    Text(
+                        "Узнали по голосу: " + recognized.joinToString { "${it.name} (${similarityPercent(it.similarity!!)}%)" },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
                 }
             }
         }
@@ -635,8 +672,17 @@ private fun Context.shareJson(uri: String) {
 // ---------------------------------------------------------------- dialogs
 
 @Composable
-private fun RenameDialog(current: String, placeholder: String, onDismiss: () -> Unit, onSave: (String?) -> Unit) {
+private fun RenameDialog(
+    current: String,
+    placeholder: String,
+    match: VoiceMatch?,
+    canRemember: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (name: String?, rememberVoice: Boolean) -> Unit,
+) {
     var text by remember { mutableStateOf(current) }
+    // Уже привязанный голос не уточняем повторно без явного желания: одна запись = одно усреднение.
+    var rememberVoice by remember { mutableStateOf(canRemember && match == null) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Имя спикера") },
@@ -653,12 +699,42 @@ private fun RenameDialog(current: String, placeholder: String, onDismiss: () -> 
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                match?.let {
+                    Text(
+                        it.similarity?.let { sim -> "Узнан по голосу «${it.name}», сходство ${similarityPercent(sim)}%" }
+                            ?: "Голос сохранён как «${it.name}»",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                if (canRemember) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .toggleable(value = rememberVoice, role = Role.Checkbox, onValueChange = { rememberVoice = it })
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(checked = rememberVoice, onCheckedChange = null, modifier = Modifier.padding(end = 12.dp))
+                        Column {
+                            Text(if (match == null) "Запомнить голос" else "Уточнить голос по этой записи", style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                "Приложение подпишет этого человека в следующих записях",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
             }
         },
-        confirmButton = { TextButton(onClick = { onSave(text) }) { Text("Сохранить") } },
+        confirmButton = {
+            TextButton(onClick = { onSave(text, rememberVoice && text.isNotBlank()) }) { Text("Сохранить") }
+        },
         dismissButton = {
             Row {
-                if (current.isNotEmpty()) TextButton(onClick = { onSave(null) }) { Text("Сбросить") }
+                if (current.isNotEmpty()) TextButton(onClick = { onSave(null, false) }) { Text("Сбросить") }
                 TextButton(onClick = onDismiss) { Text("Отмена") }
             }
         },
@@ -783,3 +859,5 @@ private fun CenterText(text: String) {
         Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
+
+private fun similarityPercent(similarity: Float): Int = (similarity * 100).roundToInt().coerceIn(0, 100)
