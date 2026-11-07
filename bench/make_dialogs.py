@@ -5,6 +5,7 @@
 в формате экспорта приложения + поле lang.
 
   python make_dialogs.py --lang ru --n 8 --out data/ru
+  python make_dialogs.py --lang ru --n 9 --spk 2 3 4 --turns 24 --no-phone --prefix ru_multi --out data/ru_multi
 """
 import argparse
 import csv
@@ -80,6 +81,10 @@ def main():
     ap.add_argument("--out", default=None)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--min-clips", type=int, default=4)
+    ap.add_argument("--spk", type=int, nargs="+", default=None,
+                    help="число спикеров по кругу (по умолчанию случайно 2/2/3)")
+    ap.add_argument("--prefix", default=None, help="префикс имён файлов (по умолчанию язык)")
+    ap.add_argument("--no-phone", action="store_true", help="не делать последний файл «телефонным»")
     args = ap.parse_args()
     rnd = random.Random(args.seed)
 
@@ -98,7 +103,7 @@ def main():
     vad_cfg = make_vad()
 
     for d in range(args.n):
-        n_spk = rnd.choice([2, 2, 3])
+        n_spk = args.spk[d % len(args.spk)] if args.spk else rnd.choice([2, 2, 3])
         spk = rnd.sample(speakers, n_spk)
         pools = {s: rnd.sample(by_spk[s], len(by_spk[s])) for s in spk}
         audio = np.zeros(int(0.8 * SR), dtype=np.float32)
@@ -131,14 +136,15 @@ def main():
             prev = s
         audio = np.concatenate([audio, np.zeros(int(0.8 * SR), dtype=np.float32)])
         audio += np.random.default_rng(d).normal(0, 0.002, len(audio)).astype(np.float32)
-        is_phone = d == args.n - 1
+        is_phone = d == args.n - 1 and not args.no_phone
         if is_phone:
             audio = phone(audio)
         # переименовываем спикеров по порядку появления
         names = {}
         for u in ref:
             u["speaker_id"] = names.setdefault(u["speaker_id"], f"speaker_{len(names) + 1}")
-        name = f"{args.lang}_{d:02d}{'_phone' if is_phone else ''}"
+        tag = f"_{n_spk}spk" if args.spk else ""
+        name = f"{args.prefix or args.lang}{tag}_{d:02d}{'_phone' if is_phone else ''}"
         sf.write(out / f"{name}.wav", np.clip(audio, -1, 1), SR, subtype="PCM_16")
         (out / f"{name}.json").write_text(
             json.dumps({"transcript": ref}, ensure_ascii=False, indent=1), encoding="utf-8")

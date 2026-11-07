@@ -13,6 +13,7 @@ import com.k2fsa.sherpa.onnx.OfflineSpeakerSegmentationModelConfig
 import com.k2fsa.sherpa.onnx.OfflineSpeakerSegmentationPyannoteModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTransducerModelConfig
 import com.k2fsa.sherpa.onnx.SileroVadModelConfig
+import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractor
 import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractorConfig
 import com.k2fsa.sherpa.onnx.SpokenLanguageIdentification
 import com.k2fsa.sherpa.onnx.SpokenLanguageIdentificationConfig
@@ -154,7 +155,10 @@ class SherpaPipeline @Inject constructor(
             vad.release()
         }
         val pad = (t.pad * SR).toInt()
-        return out.map { maxOf(0, it.first - pad) until minOf(pcm.size, it.last + 1 + pad) }
+        val maxSamples = (t.vadMaxSpeech * SR).toInt()
+        return out
+            .map { maxOf(0, it.first - pad) until minOf(pcm.size, it.last + 1 + pad) }
+            .flatMap { ChunkSplitter.split(pcm, it, maxSamples, SR) }
     }
 
     private fun detectLanguage(pcm: FloatArray, chunks: List<IntRange>): String {
@@ -179,15 +183,27 @@ class SherpaPipeline @Inject constructor(
                 System.arraycopy(pcm, c.first, speech, pos, n)
                 pos += n
             }
-            val stream = lid.createStream()
-            try {
-                stream.acceptWaveform(speech, SR)
-                val lang = lid.compute(stream)
-                Log.i(TAG, "LID: $lang")
-                return if (lang == "en") "en" else "ru"
-            } finally {
-                stream.release()
+            fun identify(samples: FloatArray): String {
+                val stream = lid.createStream()
+                try {
+                    stream.acceptWaveform(samples, SR)
+                    return lid.compute(stream)
+                } finally {
+                    stream.release()
+                }
             }
+            val first = identify(speech)
+            Log.i(TAG, "LID: $first")
+            if (first != "en") return "ru"
+            // Русский в приоритете, а ошибка «ru → en» губит весь транскрипт: на реверберации
+            // whisper-tiny иногда слышит в русском английский. Подтверждаем «en» голосованием
+            // по 5 VAD-чанкам (≥ 2 с), равномерно взятым по записи: нужно большинство «en».
+            val long = chunks.filter { it.last - it.first + 1 >= 2 * SR }
+            if (long.size < 3) return "en"
+            val pick = if (long.size >= 5) List(5) { k -> long[Math.round(k * (long.size - 1) / 4f)] } else long
+            val votes = pick.count { identify(pcm.copyOfRange(it.first, it.last + 1)) == "en" }
+            Log.i(TAG, "LID confirm: $votes/${pick.size} en")
+            return if (votes * 2 > pick.size) "en" else "ru"
         } finally {
             lid.release()
         }
@@ -221,10 +237,48 @@ class SherpaPipeline @Inject constructor(
                 if (scope.isActive) 0 else 1
             }
             val segs = sd.processWithCallback(pcm, callback)
-            return segs.map { SpeakerSegment(it.start, it.end, it.speaker) }.sortedBy { it.start }
+                .map { SpeakerSegment(it.start, it.end, it.speaker) }
+                .sortedBy { it.start }
+            return if (numSpeakers != null && numSpeakers > 0) segs else absorbSmallSpeakers(pcm, segs, t)
         } finally {
             sd.release()
         }
+    }
+
+    /** Мелкие «спикеры» (несколько секунд речи) → к самому похожему, см. [Reclusterer]. */
+    private fun absorbSmallSpeakers(pcm: FloatArray, segs: List<SpeakerSegment>, t: Tuning): List<SpeakerSegment> {
+        val durations = segs.groupBy { it.speaker }.mapValues { (_, l) -> l.sumOf { (it.end - it.start).toDouble() }.toFloat() }
+        val total = durations.values.sum()
+        // нечего склеивать — не грузим модель эмбеддингов
+        if (durations.size < 2 || durations.values.none { it < minOf(t.minSpeakerSec, 0.15f * total) }) return segs
+        val extractor = SpeakerEmbeddingExtractor(
+            assets,
+            SpeakerEmbeddingExtractorConfig(model = Paths.DIARIZATION_EMBEDDING, numThreads = threads),
+        )
+        val embeddings = HashMap<Int, FloatArray>()
+        try {
+            for (k in durations.keys.sorted()) {
+                val stream = extractor.createStream()
+                var taken = 0f
+                // самые длинные сегменты первыми, до 30 с — как в bench
+                for (s in segs.filter { it.speaker == k }.sortedByDescending { it.end - it.start }) {
+                    if (taken >= EMB_MAX_SEC) break
+                    val from = (s.start * SR).toInt().coerceIn(0, pcm.size)
+                    val to = (s.end * SR).toInt().coerceIn(from, pcm.size)
+                    if (to > from) stream.acceptWaveform(pcm.copyOfRange(from, to), SR)
+                    taken += s.end - s.start
+                }
+                stream.inputFinished()
+                if (extractor.isReady(stream)) embeddings[k] = Reclusterer.normalize(extractor.compute(stream))
+                stream.release()
+            }
+        } finally {
+            extractor.release()
+        }
+        if (embeddings.size < 2) return segs
+        val label = Reclusterer.relabel(embeddings, durations, t.minSpeakerSec)
+        Log.i(TAG, "recluster: ${durations.size} → ${label.values.toSet().size} спикеров")
+        return segs.map { it.copy(speaker = label.getValue(it.speaker)) }
     }
 
     private suspend fun ProducerScope<PipelineEvent>.transcribe(
@@ -333,6 +387,8 @@ class SherpaPipeline @Inject constructor(
         val clusterThreshold: Float = 0.8f,
         val minDurationOn: Float = 0.3f,
         val minDurationOff: Float = 0.5f,
+        /** Спикеры с речью меньше (но не больше 15% всей речи) отдаются самому похожему. Стенд: DER ru 6.8→6.3%, AMI 28.6→27.5%. */
+        val minSpeakerSec: Float = 6f,
         /** Шаг окна pyannote (доля 10-с окна). Больше шаг — меньше эмбеддингов, быстрее, чуть хуже DER. */
         val windowShift: Float,
         val vadMinSilence: Float = 0.3f,
@@ -354,5 +410,6 @@ class SherpaPipeline @Inject constructor(
         const val TAG = "SherpaPipeline"
         const val SR = TranscriptionPipeline.SAMPLE_RATE
         const val VAD_WINDOW = 512
+        const val EMB_MAX_SEC = 30f
     }
 }

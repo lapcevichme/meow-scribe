@@ -89,6 +89,8 @@ class Config:
     split_gap: float = 3.0
     sent_gap: float = 0.4           # пауза после конца предложения → новая реплика
     merge: str = "words"            # words | segments
+    recluster_sim: float = 0.0      # 0 = выкл.; склейка спикеров с косинусом эмбеддингов > порога
+    min_spk_sec: float = 6.0        # спикеры с речью меньше (но не больше 15% всей речи) — к самому похожему
     threads: int = 4
 
 
@@ -132,7 +134,25 @@ def vad_chunks(pcm: np.ndarray, cfg: Config) -> list[tuple[int, int]]:
     vad.flush()
     drain()
     pad = int(cfg.pad * SR)
-    return [(max(0, s - pad), min(len(pcm), e + pad)) for s, e in out]
+    chunks = [(max(0, s - pad), min(len(pcm), e + pad)) for s, e in out]
+    # На сплошном шуме (гул голосов, ТВ) Silero не видит пауз и max_speech_duration не срабатывает:
+    # VAD отдаёт всю запись одним сегментом, а ASR на кусках > 30 с выдаёт мусор. Режем сами.
+    return [c for s, e in chunks for c in split_long(pcm, s, e, cfg.vad_max_speech)]
+
+
+def split_long(pcm, s: int, e: int, max_len: float) -> list[tuple[int, int]]:
+    """Делит [s, e) на куски не длиннее max_len по самым тихим 100-мс окнам во второй половине куска."""
+    m, win, hop = int(max_len * SR), int(0.1 * SR), int(0.01 * SR)
+    out = []
+    while e - s > m:
+        lo, hi = s + m // 2, s + m - win
+        cs = np.concatenate([[0.0], np.cumsum(pcm[lo:hi + win].astype(np.float64) ** 2)])
+        idx = np.arange(0, hi - lo, hop)
+        cut = lo + int(idx[np.argmin(cs[idx + win] - cs[idx])]) + win // 2
+        out.append((s, cut))
+        s = cut
+    out.append((s, e))
+    return out
 
 
 def tokens_to_words(tokens, stamps, offset: float, chunk_end: float) -> list[Word]:
@@ -197,7 +217,87 @@ def diarize(pcm, cfg: Config):
         min_duration_off=cfg.min_off,
     )
     sd = sherpa_onnx.OfflineSpeakerDiarization(c)
-    return [(s.start, s.end, s.speaker) for s in sd.process(pcm).sort_by_start_time()]
+    segs = [(s.start, s.end, s.speaker) for s in sd.process(pcm).sort_by_start_time()]
+    if not cfg.num_speakers and (cfg.recluster_sim > 0 or cfg.min_spk_sec > 0):
+        segs = recluster(pcm, segs, cfg)
+    return segs
+
+
+_EXT = {}
+
+
+def speaker_embeddings(pcm, segs, cfg, max_sec=30.0):
+    """Один эмбеддинг на спикера: склейка его самых длинных сегментов (до max_sec)."""
+    path = (str(ASSETS / "diarization/embedding.onnx") if cfg.emb == "prod"
+            else str(CACHE / "emb" / f"{EMB[cfg.emb]}.onnx") if cfg.emb in EMB else cfg.emb)
+    if path not in _EXT:
+        _EXT[path] = sherpa_onnx.SpeakerEmbeddingExtractor(
+            sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=path, num_threads=cfg.threads))
+    ext = _EXT[path]
+    embs, dur = {}, {}
+    for k in sorted({x[2] for x in segs}):
+        mine = sorted([x for x in segs if x[2] == k], key=lambda x: x[0] - x[1])
+        dur[k] = sum(e - s for s, e, _ in mine)
+        parts, tot = [], 0.0
+        for s, e, _ in mine:
+            if tot >= max_sec:
+                break
+            parts.append(pcm[int(s * SR):int(e * SR)])
+            tot += e - s
+        st = ext.create_stream()
+        st.accept_waveform(SR, np.concatenate(parts))
+        st.input_finished()
+        v = np.array(ext.compute(st)) if ext.is_ready(st) else None
+        if v is not None:
+            embs[k] = v / (np.linalg.norm(v) + 1e-9)
+    return embs, dur
+
+
+def recluster(pcm, segs, cfg):
+    """Второй проход поверх кластеризации sherpa: эмбеддинги по всей речи спикера надёжнее
+    эмбеддингов коротких окон. Похожих спикеров склеиваем, «спикеров» с парой секунд речи
+    отдаём самому похожему — на живом разговоре sherpa часто дробит одного человека на несколько."""
+    if not segs:
+        return segs
+    embs, dur = speaker_embeddings(pcm, segs, cfg)
+    label = {k: k for k in dur}
+    groups = {k: [k] for k in embs}
+
+    def cen(g):
+        v = sum(embs[k] * dur[k] for k in groups[g])
+        return v / (np.linalg.norm(v) + 1e-9)
+
+    def gdur(g):
+        return sum(dur[k] for k in groups[g])
+
+    def merge(a, b):  # b → a
+        groups[a] += groups.pop(b)
+
+    while cfg.recluster_sim > 0 and len(groups) > 1:
+        ks = list(groups)
+        best, pair = -1.0, None
+        for i in range(len(ks)):
+            for j in range(i + 1, len(ks)):
+                sim = float(cen(ks[i]) @ cen(ks[j]))
+                if sim > best:
+                    best, pair = sim, (ks[i], ks[j])
+        if best < cfg.recluster_sim:
+            break
+        a, b = pair
+        merge(a, b) if gdur(a) >= gdur(b) else merge(b, a)
+    # на коротких записях порог не больше 15% речи, иначе двое собеседников по 5 с сольются в одного
+    min_sec = min(cfg.min_spk_sec, 0.15 * sum(dur.values()))
+    while min_sec > 0 and len(groups) > 1:
+        small = min(groups, key=gdur)
+        if gdur(small) >= min_sec:
+            break
+        c = cen(small)
+        target = max((g for g in groups if g != small), key=lambda g: float(cen(g) @ c))
+        merge(target, small)
+    for g, ks in groups.items():
+        for k in ks:
+            label[k] = g
+    return [(s, e, label[k]) for s, e, k in segs]
 
 
 def assign_speakers(words: list[Word], segs) -> None:
@@ -254,11 +354,24 @@ def detect_language(pcm, chunks, threads) -> str:
             whisper=sherpa_onnx.SpokenLanguageIdentificationWhisperConfig(
                 encoder=_m(d, "tiny-encoder.int8.onnx"), decoder=_m(d, "tiny-decoder.int8.onnx")),
             num_threads=threads))
-    speech = np.concatenate([pcm[s:e] for s, e in chunks])[: 29 * SR] if chunks else pcm[: 29 * SR]
-    st = _LID.create_stream()
-    st.accept_waveform(SR, speech)
-    lang = _LID.compute(st)
-    return "en" if lang == "en" else "ru"
+    speech = np.concatenate([pcm[s:e] for s, e in chunks]) if chunks else pcm
+
+    def lid(x):
+        st = _LID.create_stream()
+        st.accept_waveform(SR, x)
+        return _LID.compute(st)
+
+    if lid(speech[: 29 * SR]) != "en":
+        return "ru"
+    # Русский в приоритете, а ошибка «ru → en» губит весь транскрипт: на реверберации whisper-tiny
+    # иногда слышит в русском английский. Подтверждаем «en» голосованием по 5 VAD-чанкам,
+    # равномерно взятым по записи (≥ 2 с каждый): нужно большинство «en».
+    long = [c for c in chunks if c[1] - c[0] >= 2 * SR]
+    if len(long) < 3:
+        return "en"
+    pick = [long[round(k * (len(long) - 1) / 4)] for k in range(5)] if len(long) >= 5 else long
+    votes = sum(lid(pcm[s:e]) == "en" for s, e in pick)
+    return "en" if votes * 2 > len(pick) else "ru"
 
 
 _REC: dict = {}
