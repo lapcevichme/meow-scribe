@@ -29,6 +29,8 @@ sealed interface ProcessingUiState {
         val config: PipelineConfig,
         val queued: Boolean,
         val progress: ProcessingProgress?,
+        /** Нажали «Отменить», ждём, пока текущий шаг дойдёт до точки, где его можно остановить. */
+        val cancelling: Boolean = false,
     ) : ProcessingUiState
 
     data class Done(
@@ -53,7 +55,8 @@ class ProcessingViewModel @Inject constructor(
     val state: StateFlow<ProcessingUiState> = combine(
         repository.observeSession(sessionId),
         queue.progress.map { it[sessionId] },
-    ) { session, progress ->
+        queue.cancelling.map { sessionId in it },
+    ) { session, progress, cancelling ->
         when {
             session == null -> ProcessingUiState.NotFound
             session.status == SessionStatus.DONE -> ProcessingUiState.Done(
@@ -72,6 +75,7 @@ class ProcessingViewModel @Inject constructor(
                 config = session.config,
                 queued = session.status == SessionStatus.QUEUED && progress == null,
                 progress = progress,
+                cancelling = cancelling,
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ProcessingUiState.Loading)

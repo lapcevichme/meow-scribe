@@ -15,6 +15,12 @@ interface ProcessingQueue {
      */
     val summaries: StateFlow<Set<Long>>
 
+    /**
+     * Записи, которые отменили, но обработка ещё не остановилась. Нативные шаги (диаризация sherpa)
+     * проверяют отмену только в своих контрольных точках, поэтому остановка бывает небыстрой.
+     */
+    val cancelling: StateFlow<Set<Long>>
+
     /** true, пока есть активная или ожидающая работа (включая сводки). */
     val busy: StateFlow<Boolean>
 

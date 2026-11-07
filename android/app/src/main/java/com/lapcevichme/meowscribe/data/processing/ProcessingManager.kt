@@ -69,6 +69,9 @@ class ProcessingManager @Inject constructor(
     private val _summaries = MutableStateFlow<Set<Long>>(emptySet())
     override val summaries: StateFlow<Set<Long>> = _summaries.asStateFlow()
 
+    private val _cancelling = MutableStateFlow<Set<Long>>(emptySet())
+    override val cancelling: StateFlow<Set<Long>> = _cancelling.asStateFlow()
+
     private val _busy = MutableStateFlow(false)
     override val busy: StateFlow<Boolean> = _busy.asStateFlow()
 
@@ -115,6 +118,7 @@ class ProcessingManager @Inject constructor(
     override fun cancel(sessionId: Long) {
         _summaries.update { it - sessionId }
         if (currentId == sessionId) {
+            if (!currentIsSummary) _cancelling.update { it + sessionId }
             currentJob?.cancel()
         } else if (queued.remove(sessionId)) {
             cancelled.add(sessionId)
@@ -147,6 +151,7 @@ class ProcessingManager @Inject constructor(
         currentJob = null
         currentId = null
         _progress.update { it - id }
+        _cancelling.update { it - id }
     }
 
     private suspend fun runSession(id: Long, audioUri: String, config: PipelineConfig) {

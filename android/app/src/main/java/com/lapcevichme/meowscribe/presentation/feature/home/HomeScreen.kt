@@ -424,7 +424,11 @@ private fun ProgressLine(item: SessionItem) {
             modifier = Modifier.fillMaxWidth(),
         )
         Text(
-            text = if (p != null) "${(p.overallFraction * 100).toInt()}% · ${stringResource(p.stage.labelRes())}" else "Подготовка…",
+            text = when {
+                item.cancelling -> "Отменяем…"
+                p != null -> "${(p.overallFraction * 100).toInt()}% · ${stringResource(p.stage.labelRes())}"
+                else -> "Подготовка…"
+            },
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.primary,
         )

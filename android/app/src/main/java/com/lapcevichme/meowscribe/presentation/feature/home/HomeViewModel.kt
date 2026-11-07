@@ -36,6 +36,8 @@ data class SessionItem(
     val snippet: String? = null,
     /** Сводка LLM ждёт очереди или считается. */
     val summary: SummaryState? = null,
+    /** Отмену нажали, обработка ещё останавливается. */
+    val cancelling: Boolean = false,
 )
 
 data class HomeUiState(
@@ -77,11 +79,11 @@ class HomeViewModel @Inject constructor(
 
     val state: StateFlow<HomeUiState> = combine(
         repository.observeSessions(),
-        combine(queue.progress, queue.summaries, ::Pair),
+        combine(queue.progress, queue.summaries, queue.cancelling, ::Triple),
         filter,
         importing,
         search,
-    ) { sessions, (progress, summaries), f, isImporting, s ->
+    ) { sessions, (progress, summaries, cancelling), f, isImporting, s ->
         val found = if (s.query.isEmpty()) sessions else sessions.filter {
             it.id in s.matches || it.title.contains(s.query, ignoreCase = true) ||
                 it.summaryTitle?.contains(s.query, ignoreCase = true) == true
@@ -89,7 +91,7 @@ class HomeViewModel @Inject constructor(
         HomeUiState(
             isLoading = false,
             items = found.filter { it.matches(f) }.map {
-                SessionItem(it, progress[it.id], s.matches[it.id], summaryState(it.id, summaries, progress))
+                SessionItem(it, progress[it.id], s.matches[it.id], summaryState(it.id, summaries, progress), it.id in cancelling)
             },
             query = s.query,
             filter = f,

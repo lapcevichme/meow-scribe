@@ -37,6 +37,7 @@ import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SegmentedListItem
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.toShape
@@ -91,7 +92,12 @@ fun ProcessingScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 FilledTonalButton(onClick = onBack, modifier = Modifier.weight(1f).height(52.dp)) { Text("Свернуть") }
-                OutlinedButton(onClick = viewModel::cancel, modifier = Modifier.weight(1f).height(52.dp)) { Text("Отменить") }
+                val cancelling = (state as ProcessingUiState.Running).cancelling
+                OutlinedButton(
+                    onClick = viewModel::cancel,
+                    enabled = !cancelling,
+                    modifier = Modifier.weight(1f).height(52.dp),
+                ) { Text(if (cancelling) "Отменяем…" else "Отменить") }
             }
         }
     }
@@ -117,11 +123,38 @@ private fun RunningContent(state: ProcessingUiState.Running) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 4.dp).offset(y = (-8).dp),
         )
+        if (state.cancelling) CancellingNote(p?.stage)
         Hero(p, state.queued)
         StageList(p)
         if (p != null) Metrics(p)
         if (!p?.partial.isNullOrEmpty()) PartialUtterances(p!!)
         Spacer(Modifier.height(8.dp))
+    }
+}
+
+/** Отмена не мгновенная: объясняем почему, иначе кажется, что приложение зависло. */
+@Composable
+private fun CancellingNote(stage: Stage?) {
+    Surface(color = MaterialTheme.colorScheme.errorContainer, shape = RoundedCornerShape(24.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            CircularProgressIndicator(Modifier.size(20.dp).padding(top = 2.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onErrorContainer)
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Отменяем…", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onErrorContainer)
+                Text(
+                    if (stage == Stage.DIARIZATION) {
+                        "Разделение спикеров целиком считает библиотека распознавания, и прервать её посреди расчёта нельзя. " +
+                            "Остановимся в ближайшей контрольной точке — на длинной записи это может занять несколько минут."
+                    } else {
+                        "Остановимся, как только закончится текущий фрагмент."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                )
+            }
+        }
     }
 }
 
