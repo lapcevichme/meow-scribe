@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import com.lapcevichme.meowscribe.presentation.components.displayTitle
 import javax.inject.Inject
 
 sealed interface ProcessingUiState {
@@ -56,17 +57,17 @@ class ProcessingViewModel @Inject constructor(
         when {
             session == null -> ProcessingUiState.NotFound
             session.status == SessionStatus.DONE -> ProcessingUiState.Done(
-                title = session.title,
+                title = session.displayTitle,
                 speakerCount = session.speakerCount,
                 processingMs = session.processingMs,
                 rtf = session.rtf,
             )
             session.status == SessionStatus.ERROR -> ProcessingUiState.Failed(
-                session.title,
+                session.displayTitle,
                 session.errorMessage ?: "Ошибка обработки",
             )
             else -> ProcessingUiState.Running(
-                title = session.title,
+                title = session.displayTitle,
                 durationMs = session.durationMs,
                 config = session.config,
                 queued = session.status == SessionStatus.QUEUED && progress == null,

@@ -77,10 +77,20 @@ class JsonTranscriptExporter @Inject constructor(
                             put(MediaStore.Downloads.DISPLAY_NAME, fileName)
                             put(MediaStore.Downloads.MIME_TYPE, mimeType)
                             put(MediaStore.Downloads.RELATIVE_PATH, relativePath)
+                            // Пока пишем, файл скрыт от других приложений; при сбое не останется пустого JSON.
+                            put(MediaStore.Downloads.IS_PENDING, 1)
                         },
                     ),
                 )
-                resolver.openOutputStream(uri, "wt").use { requireNotNull(it).write(content.toByteArray(Charsets.UTF_8)) }
+                try {
+                    resolver.openOutputStream(uri, "wt").use { requireNotNull(it).write(content.toByteArray(Charsets.UTF_8)) }
+                } catch (e: Exception) {
+                    if (existing == null) resolver.delete(uri, null, null)
+                    throw e
+                }
+                if (existing == null) {
+                    resolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+                }
                 // Имя могло измениться, если файл с таким же именем создало другое приложение.
                 val actualName = resolver.query(uri, arrayOf(MediaStore.Downloads.DISPLAY_NAME), null, null, null)
                     ?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: fileName

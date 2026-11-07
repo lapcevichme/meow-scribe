@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import com.lapcevichme.meowscribe.presentation.components.summaryTitle
 import javax.inject.Inject
 
 enum class HomeFilter { ALL, DONE, IN_PROGRESS }
@@ -82,7 +83,8 @@ class HomeViewModel @Inject constructor(
         search,
     ) { sessions, (progress, summaries), f, isImporting, s ->
         val found = if (s.query.isEmpty()) sessions else sessions.filter {
-            it.id in s.matches || it.title.contains(s.query, ignoreCase = true)
+            it.id in s.matches || it.title.contains(s.query, ignoreCase = true) ||
+                it.summaryTitle?.contains(s.query, ignoreCase = true) == true
         }
         HomeUiState(
             isLoading = false,

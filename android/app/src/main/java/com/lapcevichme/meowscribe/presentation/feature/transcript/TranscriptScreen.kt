@@ -114,6 +114,9 @@ import com.lapcevichme.meowscribe.presentation.components.SpeakerAvatar
 import com.lapcevichme.meowscribe.presentation.components.SpeakerShape
 import com.lapcevichme.meowscribe.presentation.components.SpeakerStyle
 import com.lapcevichme.meowscribe.presentation.components.defaultSpeakerName
+import com.lapcevichme.meowscribe.presentation.components.displayTitle
+import com.lapcevichme.meowscribe.presentation.components.summaryPoints
+import com.lapcevichme.meowscribe.presentation.components.summaryTitle
 import com.lapcevichme.meowscribe.presentation.components.formatDuration
 import com.lapcevichme.meowscribe.presentation.components.formatFileSize
 import com.lapcevichme.meowscribe.presentation.components.formatRtf
@@ -377,8 +380,10 @@ private fun TranscriptHeader(
 ) {
     val s = content.session
     Column(Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(s.title, style = MaterialTheme.typography.headlineMediumEmphasized, modifier = Modifier.padding(horizontal = 4.dp))
+        Text(s.displayTitle, style = MaterialTheme.typography.headlineMediumEmphasized, modifier = Modifier.padding(horizontal = 4.dp))
         val meta = listOfNotNull(
+            // Название придумала LLM — исходное имя файла оставляем в метаданных.
+            s.title.takeIf { s.summaryTitle != null },
             s.durationMs?.let(::formatDuration),
             pluralSpeakers(content.speakerIds.size),
             s.processingMs?.let { "обработано за ${formatDuration(it)}" },
@@ -444,10 +449,26 @@ private fun TranscriptHeader(
         }
         if (s.summary == null) content.summaryState?.let { SummaryPending(it) }
         s.summary?.let { summary ->
+            val points = s.summaryPoints
             Surface(color = MaterialTheme.colorScheme.tertiaryContainer, shape = RoundedCornerShape(24.dp)) {
-                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("Сводка", style = MaterialTheme.typography.titleSmall)
-                    Text(summary, style = MaterialTheme.typography.bodyMedium)
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Главное", style = MaterialTheme.typography.titleSmallEmphasized)
+                    // Сводку без пунктов (старый или нестандартный ответ модели) показываем как есть.
+                    if (points.isEmpty()) Text(summary, style = MaterialTheme.typography.bodyMedium)
+                    points.forEach { point ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Box(
+                                Modifier.padding(top = 7.dp).size(6.dp)
+                                    .background(MaterialTheme.colorScheme.tertiary, CircleShape),
+                            )
+                            Text(point, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                        }
+                    }
+                    Text(
+                        "Сводку написала локальная LLM. Текст расшифровки она не меняет.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f),
+                    )
                 }
             }
         }

@@ -58,6 +58,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import com.lapcevichme.meowscribe.presentation.components.displayTitle
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ToggleButton
 import androidx.compose.material3.ToggleFloatingActionButton
@@ -206,7 +207,8 @@ private fun HomeContent(
                 }
             }
 
-            FloatingActionButtonMenu(
+            // На пустом экране свои кнопки импорта и записи, FAB-меню их только перекрывало бы.
+            if (state.isLoading || state.totalCount > 0) FloatingActionButtonMenu(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(bottom = padding.calculateBottomPadding()),
@@ -246,7 +248,7 @@ private fun HomeContent(
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
             title = { Text("Удалить запись?") },
-            text = { Text("«${session.title}» и её расшифровка будут удалены с устройства.") },
+            text = { Text("«${session.displayTitle}» и её расшифровка будут удалены с устройства.") },
             confirmButton = {
                 TextButton(onClick = { onDelete(session.id); pendingDelete = null }) { Text("Удалить") }
             },
@@ -383,7 +385,7 @@ private fun SessionRow(
             }
         },
     ) {
-        Text(s.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+        Text(s.displayTitle, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
     }
 }
 
