@@ -7,7 +7,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.k2fsa.sherpa.onnx.FastClusteringConfig
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
-import com.k2fsa.sherpa.onnx.OfflineNemoEncDecCtcModelConfig
+import com.k2fsa.sherpa.onnx.OfflineTransducerModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineSpeakerDiarization
@@ -81,15 +81,20 @@ class ModelsSmokeTest {
 
     @Test
     fun asr() {
-        assumeTrue("нет ASR", locator.has(Paths.ASR_MODEL))
+        assumeTrue("нет ASR", locator.has(Paths.ASR_RU_ENCODER))
         val rssBefore = rssMb()
         val (recognizer, loadMs) = timed {
             OfflineRecognizer(
                 locator.assets,
                 OfflineRecognizerConfig(
                     modelConfig = OfflineModelConfig(
-                        nemo = OfflineNemoEncDecCtcModelConfig(model = Paths.ASR_MODEL),
-                        tokens = Paths.ASR_TOKENS,
+                        transducer = OfflineTransducerModelConfig(
+                            encoder = Paths.ASR_RU_ENCODER,
+                            decoder = Paths.ASR_RU_DECODER,
+                            joiner = Paths.ASR_RU_JOINER,
+                        ),
+                        tokens = Paths.ASR_RU_TOKENS,
+                        modelType = "nemo_transducer",
                         numThreads = threads(),
                         provider = "cpu",
                     ),

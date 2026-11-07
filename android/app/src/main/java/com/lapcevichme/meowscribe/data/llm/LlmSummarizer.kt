@@ -1,9 +1,9 @@
 package com.lapcevichme.meowscribe.data.llm
 
-import android.content.Context
 import android.util.Log
+import com.lapcevichme.meowscribe.data.models.ModelLocator
 import com.lapcevichme.meowscribe.domain.model.Utterance
-import dagger.hilt.android.qualifiers.ApplicationContext
+import com.lapcevichme.meowscribe.llama.LlamaModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -11,7 +11,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -29,54 +28,48 @@ data class ConversationSummary(
  */
 @Singleton
 class LlmSummarizer @Inject constructor(
-    @ApplicationContext private val context: Context,
+    private val locator: ModelLocator,
 ) {
     private val mutex = Mutex()
-    private val threads = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
 
-    /** Есть ли модель в APK (на случай сборки без LLM). */
-    fun isAvailable(): Boolean = runCatching { context.assets.openFd(ASSET_PATH).use { true } }.getOrDefault(false)
+    /** Есть ли .gguf в APK (на случай сборки без LLM). */
+    fun isAvailable(): Boolean = locator.llmAssets().isNotEmpty()
 
     /**
      * @param onProgress 0..1 — грубая оценка по числу сгенерированных токенов.
-     * @return null, если транскрипт пустой или модель не справилась с форматом.
+     * @return null, если транскрипт пустой, LLM нет в сборке или модель не справилась с форматом.
      */
     suspend fun summarize(
         utterances: List<Utterance>,
         onProgress: (Float) -> Unit = {},
     ): ConversationSummary? = mutex.withLock {
+        if (utterances.none { it.text.isNotBlank() }) return@withLock null
+        val file = locator.llmFile() ?: return@withLock null
         withContext(Dispatchers.Default) {
-            if (utterances.none { it.text.isNotBlank() }) return@withContext null
-            val model = ensureModelFile()
-            val handle = LlamaNative.nativeLoad(model.absolutePath, N_CTX, threads)
-            check(handle != 0L) { "Не удалось загрузить LLM" }
-            try {
-                val transcript = fitTranscript(handle, utterances)
-                val prompt = buildPrompt(transcript)
-                currentCoroutineContext().ensureActive()
+            LlamaModel.load(file.path, contextSize = N_CTX).use { llm ->
+                val prompt = buildPrompt(fitTranscript(llm, utterances))
                 val ctx = currentCoroutineContext()
-                val bytes = LlamaNative.nativeGenerate(handle, prompt, MAX_TOKENS, 0f) { n ->
-                    onProgress((n.toFloat() / EXPECTED_TOKENS).coerceAtMost(0.99f))
-                    ctx.isActive
+                ctx.ensureActive()
+                var polls = 0
+                val raw = llm.generate(prompt, maxTokens = MAX_TOKENS) {
+                    onProgress(((++polls).toFloat() / EXPECTED_TOKENS).coerceAtMost(0.99f))
+                    !ctx.isActive
                 }
                 ctx.ensureActive()
-                val raw = bytes?.toString(Charsets.UTF_8) ?: return@withContext null
                 Log.i(TAG, "LLM raw: $raw")
                 parse(PREFILL + raw).also { onProgress(1f) }
-            } finally {
-                LlamaNative.nativeFree(handle)
             }
         }
     }
 
     /** Транскрипт в виде «Спикер N: текст», урезанный по токенам под контекст. */
-    private fun fitTranscript(handle: Long, utterances: List<Utterance>): String {
+    private fun fitTranscript(llm: LlamaModel, utterances: List<Utterance>): String {
         val lines = utterances.filter { it.text.isNotBlank() }.map { u ->
             "Спикер ${u.speakerId.substringAfter("speaker_")}: ${u.text.trim()}"
         }
         var text = lines.joinToString("\n")
         val budget = N_CTX - MAX_TOKENS - PROMPT_OVERHEAD
-        val n = LlamaNative.nativeCountTokens(handle, text)
+        val n = llm.countTokens(text)
         if (n > budget) {
             // длинная запись: оставляем начало и конец — там обычно цель и итоги разговора
             val keep = (text.length.toLong() * budget / n).toInt()
@@ -85,27 +78,17 @@ class LlmSummarizer @Inject constructor(
         return text
     }
 
+    /**
+     * ChatML вручную, а не chat-шаблон из GGUF: шаблон Qwen3.5 включает «размышления», а нам нужен
+     * пустой блок <think> и начало ответа «Название:», чтобы 0.8B держала формат.
+     */
     private fun buildPrompt(transcript: String): String =
         "<|im_start|>system\n$SYSTEM<|im_end|>\n" +
             "<|im_start|>user\nРасшифровка разговора:\n\n$transcript<|im_end|>\n" +
             "<|im_start|>assistant\n<think>\n\n</think>\n\n$PREFILL"
 
-    /** Копирует GGUF из assets в filesDir один раз (llama.cpp нужен путь к файлу). */
-    private fun ensureModelFile(): File {
-        val dst = File(context.filesDir, "llm/$FILE_NAME")
-        val size = runCatching { context.assets.openFd(ASSET_PATH).use { it.length } }.getOrDefault(-1L)
-        if (dst.exists() && (size < 0 || dst.length() == size)) return dst
-        dst.parentFile?.mkdirs()
-        val tmp = File(dst.path + ".part")
-        context.assets.open(ASSET_PATH).use { input -> tmp.outputStream().use { input.copyTo(it, 1 shl 20) } }
-        check(tmp.renameTo(dst)) { "Не удалось сохранить модель LLM" }
-        return dst
-    }
-
     companion object {
         private const val TAG = "LlmSummarizer"
-        const val FILE_NAME = "qwen3.5-0.8b-q4_k_m.gguf"
-        const val ASSET_PATH = "models/llm/$FILE_NAME"
 
         private const val N_CTX = 4096
         private const val MAX_TOKENS = 320

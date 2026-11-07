@@ -4,7 +4,7 @@ Python-реализация того же пайплайна, что `SherpaPipe
 
 ```bash
 python -m venv .venv && .venv/Scripts/pip install sherpa-onnx jiwer soundfile numpy pyannote.metrics huggingface_hub
-bash fetch_models.sh              # боевой набор → android/app/src/main/assets/models/
+bash ../scripts/fetch_models.sh   # боевой набор → android/app/src/main/assets/models/
 bash fetch_models.sh candidates   # кандидаты для сравнения → .cache/models/
 python make_dialogs.py --lang ru --n 8                      # синтетические диалоги из Common Voice
 python make_dialogs.py --lang en --n 3 --turns 10 --min-clips 3

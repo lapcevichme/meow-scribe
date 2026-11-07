@@ -26,10 +26,26 @@ class ModelLocator @Inject constructor(
     object Paths {
         const val VAD = "models/vad/silero_vad.onnx"
 
-        const val ASR_DIR = "models/asr/giga-am-v3-ctc-punct"
-        const val ASR_MODEL = "$ASR_DIR/model.int8.onnx"
-        const val ASR_TOKENS = "$ASR_DIR/tokens.txt"
+        /** Русский: GigaAM v3 RNNT с пунктуацией и регистром (выбор по стенду, bench/README.md). */
+        const val ASR_RU_DIR = "models/asr/giga-am-v3-rnnt-punct"
+        const val ASR_RU_ENCODER = "$ASR_RU_DIR/encoder.int8.onnx"
+        const val ASR_RU_DECODER = "$ASR_RU_DIR/decoder.onnx"
+        const val ASR_RU_JOINER = "$ASR_RU_DIR/joiner.onnx"
+        const val ASR_RU_TOKENS = "$ASR_RU_DIR/tokens.txt"
 
+        /** Английский: Parakeet TDT 110M int8. */
+        const val ASR_EN_DIR = "models/asr/parakeet-tdt-110m-en"
+        const val ASR_EN_ENCODER = "$ASR_EN_DIR/encoder.int8.onnx"
+        const val ASR_EN_DECODER = "$ASR_EN_DIR/decoder.int8.onnx"
+        const val ASR_EN_JOINER = "$ASR_EN_DIR/joiner.int8.onnx"
+        const val ASR_EN_TOKENS = "$ASR_EN_DIR/tokens.txt"
+
+        /** Определение языка (language = auto): whisper tiny int8. */
+        const val LID_DIR = "models/lid/whisper-tiny"
+        const val LID_ENCODER = "$LID_DIR/tiny-encoder.int8.onnx"
+        const val LID_DECODER = "$LID_DIR/tiny-decoder.int8.onnx"
+
+        /** fp32: int8-версия на стенде поднимает DER с 6.9% до 11.3%. */
         const val DIARIZATION_SEGMENTATION = "models/diarization/segmentation.onnx"
         const val DIARIZATION_EMBEDDING = "models/diarization/embedding.onnx"
 
@@ -43,8 +59,9 @@ class ModelLocator @Inject constructor(
     /** Что реально лежит в APK — для диагностики и экрана «О приложении». */
     fun inventory(): List<ModelInfo> = listOf(
         ModelInfo("VAD (Silero)", Paths.VAD, assetSize(Paths.VAD)),
-        ModelInfo("ASR", Paths.ASR_MODEL, assetSize(Paths.ASR_MODEL)),
-        ModelInfo("ASR tokens", Paths.ASR_TOKENS, assetSize(Paths.ASR_TOKENS)),
+        ModelInfo("ASR ru (GigaAM v3)", Paths.ASR_RU_ENCODER, assetSize(Paths.ASR_RU_ENCODER)),
+        ModelInfo("ASR en (Parakeet)", Paths.ASR_EN_ENCODER, assetSize(Paths.ASR_EN_ENCODER)),
+        ModelInfo("Определение языка", Paths.LID_DECODER, assetSize(Paths.LID_DECODER)),
         ModelInfo("Сегментация спикеров", Paths.DIARIZATION_SEGMENTATION, assetSize(Paths.DIARIZATION_SEGMENTATION)),
         ModelInfo("Эмбеддинги спикеров", Paths.DIARIZATION_EMBEDDING, assetSize(Paths.DIARIZATION_EMBEDDING)),
     ) + llmAssets().map { ModelInfo("LLM", "${Paths.LLM_DIR}/$it", assetSize("${Paths.LLM_DIR}/$it")) }

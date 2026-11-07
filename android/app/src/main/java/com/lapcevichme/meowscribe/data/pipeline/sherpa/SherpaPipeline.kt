@@ -1,6 +1,5 @@
 package com.lapcevichme.meowscribe.data.pipeline.sherpa
 
-import android.content.Context
 import android.content.res.AssetManager
 import android.os.SystemClock
 import android.util.Log
@@ -20,13 +19,14 @@ import com.k2fsa.sherpa.onnx.SpokenLanguageIdentificationConfig
 import com.k2fsa.sherpa.onnx.SpokenLanguageIdentificationWhisperConfig
 import com.k2fsa.sherpa.onnx.Vad
 import com.k2fsa.sherpa.onnx.VadModelConfig
+import com.lapcevichme.meowscribe.data.models.ModelLocator
+import com.lapcevichme.meowscribe.data.models.ModelLocator.Paths
 import com.lapcevichme.meowscribe.domain.model.PipelineConfig
 import com.lapcevichme.meowscribe.domain.model.Profile
 import com.lapcevichme.meowscribe.domain.pipeline.PipelineEvent
 import com.lapcevichme.meowscribe.domain.pipeline.Stage
 import com.lapcevichme.meowscribe.domain.pipeline.Stats
 import com.lapcevichme.meowscribe.domain.pipeline.TranscriptionPipeline
-import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.ProducerScope
@@ -52,10 +52,10 @@ import javax.inject.Singleton
  */
 @Singleton
 class SherpaPipeline @Inject constructor(
-    @ApplicationContext context: Context,
+    locator: ModelLocator,
 ) : TranscriptionPipeline {
 
-    private val assets: AssetManager = context.assets
+    private val assets: AssetManager = locator.assets
     private val threads = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
 
     override fun run(pcm: FloatArray, config: PipelineConfig): Flow<PipelineEvent> = channelFlow {
@@ -120,7 +120,7 @@ class SherpaPipeline @Inject constructor(
     private fun vadChunks(pcm: FloatArray, t: Tuning): List<IntRange> {
         val cfg = VadModelConfig(
             sileroVadModelConfig = SileroVadModelConfig(
-                model = SherpaModels.VAD,
+                model = Paths.VAD,
                 threshold = 0.5f,
                 minSilenceDuration = t.vadMinSilence,
                 minSpeechDuration = 0.1f,
@@ -162,8 +162,8 @@ class SherpaPipeline @Inject constructor(
             assets,
             SpokenLanguageIdentificationConfig(
                 whisper = SpokenLanguageIdentificationWhisperConfig(
-                    encoder = SherpaModels.LID_ENCODER,
-                    decoder = SherpaModels.LID_DECODER,
+                    encoder = Paths.LID_ENCODER,
+                    decoder = Paths.LID_DECODER,
                 ),
                 numThreads = threads,
             ),
@@ -202,10 +202,10 @@ class SherpaPipeline @Inject constructor(
             assets,
             OfflineSpeakerDiarizationConfig(
                 segmentation = OfflineSpeakerSegmentationModelConfig(
-                    pyannote = OfflineSpeakerSegmentationPyannoteModelConfig(SherpaModels.SEGMENTATION, t.windowShift),
+                    pyannote = OfflineSpeakerSegmentationPyannoteModelConfig(Paths.DIARIZATION_SEGMENTATION, t.windowShift),
                     numThreads = threads,
                 ),
-                embedding = SpeakerEmbeddingExtractorConfig(model = SherpaModels.EMBEDDING, numThreads = threads),
+                embedding = SpeakerEmbeddingExtractorConfig(model = Paths.DIARIZATION_EMBEDDING, numThreads = threads),
                 clustering = FastClusteringConfig(
                     numClusters = numSpeakers?.takeIf { it > 0 } ?: -1,
                     threshold = t.clusterThreshold,
@@ -266,16 +266,16 @@ class SherpaPipeline @Inject constructor(
     private fun createRecognizer(language: String): OfflineRecognizer {
         val transducer = if (language == "en") {
             OfflineTransducerModelConfig(
-                encoder = SherpaModels.En.ENCODER,
-                decoder = SherpaModels.En.DECODER,
-                joiner = SherpaModels.En.JOINER,
-            ) to SherpaModels.En.TOKENS
+                encoder = Paths.ASR_EN_ENCODER,
+                decoder = Paths.ASR_EN_DECODER,
+                joiner = Paths.ASR_EN_JOINER,
+            ) to Paths.ASR_EN_TOKENS
         } else {
             OfflineTransducerModelConfig(
-                encoder = SherpaModels.Ru.ENCODER,
-                decoder = SherpaModels.Ru.DECODER,
-                joiner = SherpaModels.Ru.JOINER,
-            ) to SherpaModels.Ru.TOKENS
+                encoder = Paths.ASR_RU_ENCODER,
+                decoder = Paths.ASR_RU_DECODER,
+                joiner = Paths.ASR_RU_JOINER,
+            ) to Paths.ASR_RU_TOKENS
         }
         return OfflineRecognizer(
             assets,

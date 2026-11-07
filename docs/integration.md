@@ -1,29 +1,26 @@
 # Интеграция SherpaPipeline и LLM (для Михаила)
 
-Код пайплайна готов и лежит в зоне oatis123: `data/pipeline/sherpa/`, `data/llm/`, `src/main/cpp/` (llama.cpp + JNI).
-Чтобы его включить, нужны правки в твоих файлах. Они собраны в `docs/integration.patch` (41 строка, накатывается на `main` без конфликтов):
+Код пайплайна готов и работает на твоей инфраструктуре: `ModelLocator.Paths` (пути обновил под модели со стенда), модуль `:llama` (`LlmSummarizer` использует `LlamaModel`), sherpa-onnx с JitPack. Свой JNI и AAR я удалил.
+
+Чтобы включить пайплайн, нужны правки в твоих файлах. Они собраны в `docs/integration.patch` (5 файлов, ~45 строк, накатывается на `main`):
 
 ```bash
 git apply docs/integration.patch
-bash bench/fetch_models.sh     # веса в assets + sherpa-onnx AAR в android/app/libs/ (~1 ГБ)
+./scripts/fetch_models.sh      # новая раскладка весов, старые папки удалит сам
 ```
-
-Что делает патч:
 
 | Файл | Изменение |
 | :--- | :--- |
-| `app/build.gradle.kts` | `ndkVersion = "29.0.14206865"`, `externalNativeBuild` → `src/main/cpp/CMakeLists.txt` (CMake 3.31.6), `implementation(files("libs/sherpa-onnx-2.0.1.aar"))` |
 | `di/PipelineModule.kt` | `FakePipeline()` → `SherpaPipeline` (инжектится Hilt) |
 | `SessionDao` / `SessionRepository(Impl)` | `setSummary(id, summary)` — запись в уже существующее поле `sessions.summary` |
 | `ProcessingManager` | после `saveResult` и автоэкспорта, если `config.useLlm`: `LlmSummarizer.summarize()` → `setSummary()`, прогресс идёт как `Stage.LLM` |
 
-Контракт `domain/pipeline` **не менялся**.
+Контракт `domain/pipeline` **не менялся**. Проверено на x86_64-эмуляторе с 4 ГБ: `assembleDebug`, юнит-тесты, `ModelsSmokeTest` (4/4), полный прогон 72-с файла: RTF 0.26, пиковый RSS 275 МБ, сводка готова примерно через 14 с после транскрипта.
 
-## Что нужно на машине сборки
-
-- NDK 29.0.14206865 и CMake 3.31.6 (AGP скачает сам, если приняты лицензии SDK).
-- Интернет при первой сборке: CMake скачивает llama.cpp (тег `b12176`) через FetchContent. В рантайме приложению сеть не нужна.
-- Первая нативная сборка занимает несколько минут: llama.cpp собирается под `arm64-v8a` и `x86_64`.
+Что я поменял в твоих файлах (ты сам предложил это в `android_ml_notes.md`):
+- `ModelLocator.Paths`: ASR ru → GigaAM v3 **RNNT** punct (на стенде WER с пунктуацией 7.0% против 8.7% у CTC), плюс ASR en (Parakeet 110M) и LID (whisper-tiny); `inventory()` обновлён.
+- `scripts/fetch_models.sh`: новые модели + Qwen3.5-0.8B. Сегментация теперь **fp32**: int8 на стенде поднимает DER с 6.9% до 11.3%.
+- `ModelsSmokeTest.asr`: CTC → transducer под новые пути.
 
 ## Что стоит поменять на твоей стороне (по замерам)
 

@@ -33,7 +33,7 @@ def asr_factory(name: str, threads: int):
         return sherpa_onnx.OfflineRecognizer.from_nemo_ctc(
             model=_m(d, "model.int8.onnx"), tokens=_m(d, "tokens.txt"), num_threads=threads)
     if name == "giga3_rnnt":
-        d = "asr/ru" if (ASSETS / "asr/ru").exists() else "asr/sherpa-onnx-nemo-transducer-punct-giga-am-v3-russian-2025-12-16"
+        d = "asr/giga-am-v3-rnnt-punct" if (ASSETS / "asr/giga-am-v3-rnnt-punct").exists() else "asr/sherpa-onnx-nemo-transducer-punct-giga-am-v3-russian-2025-12-16"
         return sherpa_onnx.OfflineRecognizer.from_transducer(
             encoder=_m(d, "encoder.int8.onnx"), decoder=_m(d, "decoder.onnx"), joiner=_m(d, "joiner.onnx"),
             tokens=_m(d, "tokens.txt"), model_type="nemo_transducer", num_threads=threads)
@@ -53,7 +53,7 @@ def asr_factory(name: str, threads: int):
             tokens=_m(d, "tokens.txt"), model_type="nemo_transducer", num_threads=threads)
     if name in ("parakeet3", "parakeet110"):
         d = ("asr/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8" if name == "parakeet3"
-             else "asr/en" if (ASSETS / "asr/en").exists()
+             else "asr/parakeet-tdt-110m-en" if (ASSETS / "asr/parakeet-tdt-110m-en").exists()
              else "asr/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8")
         return sherpa_onnx.OfflineRecognizer.from_transducer(
             encoder=_m(d, "encoder.int8.onnx"), decoder=_m(d, "decoder.int8.onnx"),
@@ -249,7 +249,7 @@ _LID = None
 def detect_language(pcm, chunks, threads) -> str:
     global _LID
     if _LID is None:
-        d = "lid" if (ASSETS / "lid").exists() else "asr/sherpa-onnx-whisper-tiny"
+        d = "lid/whisper-tiny" if (ASSETS / "lid/whisper-tiny").exists() else "asr/sherpa-onnx-whisper-tiny"
         _LID = sherpa_onnx.SpokenLanguageIdentification(sherpa_onnx.SpokenLanguageIdentificationConfig(
             whisper=sherpa_onnx.SpokenLanguageIdentificationWhisperConfig(
                 encoder=_m(d, "tiny-encoder.int8.onnx"), decoder=_m(d, "tiny-decoder.int8.onnx")),
