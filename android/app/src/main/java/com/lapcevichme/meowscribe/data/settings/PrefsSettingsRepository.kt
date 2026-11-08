@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.updateAndGet
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** Четыре значения, DataStore тут избыточен: хватает SharedPreferences. */
+/** Пять значений, DataStore тут избыточен: хватает SharedPreferences. */
 @Singleton
 class PrefsSettingsRepository @Inject constructor(
     @ApplicationContext context: Context,
@@ -34,6 +34,14 @@ class PrefsSettingsRepository @Inject constructor(
         }
     }
 
+    private val _wallpaperColors = MutableStateFlow(prefs.getBoolean(KEY_WALLPAPER, false))
+    override val wallpaperColors: StateFlow<Boolean> = _wallpaperColors.asStateFlow()
+
+    override fun setWallpaperColors(enabled: Boolean) {
+        _wallpaperColors.value = enabled
+        prefs.edit { putBoolean(KEY_WALLPAPER, enabled) }
+    }
+
     private fun read(): PipelineConfig {
         val defaults = PipelineConfig()
         return PipelineConfig(
@@ -50,5 +58,6 @@ class PrefsSettingsRepository @Inject constructor(
         const val KEY_LANGUAGE = "language"
         const val KEY_SPEAKERS = "num_speakers"
         const val KEY_LLM = "use_llm"
+        const val KEY_WALLPAPER = "wallpaper_colors"
     }
 }

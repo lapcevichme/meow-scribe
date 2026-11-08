@@ -7,4 +7,8 @@ import kotlinx.coroutines.flow.StateFlow
 interface SettingsRepository {
     val config: StateFlow<PipelineConfig>
     fun update(transform: (PipelineConfig) -> PipelineConfig)
+
+    /** Цвета из обоев (Material You) вместо фирменной палитры. По умолчанию выключено. */
+    val wallpaperColors: StateFlow<Boolean>
+    fun setWallpaperColors(enabled: Boolean)
 }

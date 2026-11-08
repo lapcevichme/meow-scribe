@@ -41,6 +41,7 @@ class SettingsViewModel @Inject constructor(
 ) : ViewModel() {
 
     val config: StateFlow<PipelineConfig> = settings.config
+    val wallpaperColors: StateFlow<Boolean> = settings.wallpaperColors
 
     val voiceProfiles: StateFlow<List<VoiceProfile>> = voices.observeProfiles()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -155,6 +156,7 @@ class SettingsViewModel @Inject constructor(
     fun setLanguage(value: String) = settings.update { it.copy(language = value) }
     fun setSpeakers(value: Int?) = settings.update { it.copy(numSpeakers = value) }
     fun setLlm(value: Boolean) = settings.update { it.copy(useLlm = value) }
+    fun setWallpaperColors(value: Boolean) = settings.setWallpaperColors(value)
 
     private companion object {
         const val MAX_CLIP_MS = 15_000L

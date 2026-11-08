@@ -2,6 +2,7 @@
 
 package com.lapcevichme.meowscribe.presentation.feature.settings
 
+import android.os.Build
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -63,6 +64,7 @@ fun SettingsScreen(
 ) {
     val config by viewModel.config.collectAsStateWithLifecycle()
     val voiceProfiles by viewModel.voiceProfiles.collectAsStateWithLifecycle()
+    val wallpaperColors by viewModel.wallpaperColors.collectAsStateWithLifecycle()
     val preview by viewModel.preview.collectAsStateWithLifecycle()
     val expanded by viewModel.expanded.collectAsStateWithLifecycle()
     DisposableEffect(Unit) { onDispose { viewModel.stopPreview() } }
@@ -143,6 +145,30 @@ fun SettingsScreen(
                             null
                         },
                     )
+                }
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                Section("Оформление") {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("Цвета обоев", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "Приложение подстроится под обои телефона (Material You). Выключено — фирменная палитра.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = wallpaperColors,
+                            onCheckedChange = viewModel::setWallpaperColors,
+                            thumbContent = if (wallpaperColors) {
+                                { Icon(painterResource(R.drawable.ic_check), null, Modifier.size(SwitchDefaults.IconSize)) }
+                            } else {
+                                null
+                            },
+                        )
+                    }
                 }
             }
 

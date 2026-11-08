@@ -10,12 +10,12 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 
-/** Material You (Android 12+) или запасная схема. Expressive-моушн и формы. */
+/** Фирменная палитра («рыжий кот») или, если включено в настройках, Material You из обоев (Android 12+). */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun MeowScribeTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val colorScheme = when {
@@ -23,8 +23,8 @@ fun MeowScribeTheme(
             val context = LocalContext.current
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
-        darkTheme -> FallbackDarkScheme
-        else -> FallbackLightScheme
+        darkTheme -> BrandDarkScheme
+        else -> BrandLightScheme
     }
 
     MaterialExpressiveTheme(

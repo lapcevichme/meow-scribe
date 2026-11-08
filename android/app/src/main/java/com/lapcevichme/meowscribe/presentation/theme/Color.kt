@@ -4,19 +4,20 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.graphics.Color
 
-// Запасная схема для устройств без Material You (Android < 12).
+// Фирменная палитра: по умолчанию на всех устройствах, Material You из обоев — опция в настройках.
 // Сгенерирована material-color-utilities: seed #E07A2E («рыжий кот»), вариант Tonal Spot.
-// Заменить на экспорт из Material Theme Builder, когда выберем основной цвет.
+// Вторичный цвет заменён на серо-синий (тон 40/90/80/30): в Tonal Spot он совпадал с основным,
+// и третий спикер не отличался от первого.
 
-internal val FallbackLightScheme = lightColorScheme(
+internal val BrandLightScheme = lightColorScheme(
     primary = Color(0xFF8B4F25),
     onPrimary = Color(0xFFFFFFFF),
     primaryContainer = Color(0xFFFFDBC7),
     onPrimaryContainer = Color(0xFF6E380F),
-    secondary = Color(0xFF755846),
+    secondary = Color(0xFF535F70),
     onSecondary = Color(0xFFFFFFFF),
-    secondaryContainer = Color(0xFFFFDBC7),
-    onSecondaryContainer = Color(0xFF5B4130),
+    secondaryContainer = Color(0xFFD7E3F8),
+    onSecondaryContainer = Color(0xFF3C4858),
     tertiary = Color(0xFF616134),
     onTertiary = Color(0xFFFFFFFF),
     tertiaryContainer = Color(0xFFE7E6AD),
@@ -37,15 +38,15 @@ internal val FallbackLightScheme = lightColorScheme(
     inverseOnSurface = Color(0xFFFFEDE5),
 )
 
-internal val FallbackDarkScheme = darkColorScheme(
+internal val BrandDarkScheme = darkColorScheme(
     primary = Color(0xFFFFB689),
     onPrimary = Color(0xFF512400),
     primaryContainer = Color(0xFF6E380F),
     onPrimaryContainer = Color(0xFFFFDBC7),
-    secondary = Color(0xFFE5BFA9),
-    onSecondary = Color(0xFF432B1C),
-    secondaryContainer = Color(0xFF5B4130),
-    onSecondaryContainer = Color(0xFFFFDBC7),
+    secondary = Color(0xFFBBC7DB),
+    onSecondary = Color(0xFF253140),
+    secondaryContainer = Color(0xFF3C4858),
+    onSecondaryContainer = Color(0xFFD7E3F8),
     tertiary = Color(0xFFCAC993),
     onTertiary = Color(0xFF323209),
     tertiaryContainer = Color(0xFF49491E),
