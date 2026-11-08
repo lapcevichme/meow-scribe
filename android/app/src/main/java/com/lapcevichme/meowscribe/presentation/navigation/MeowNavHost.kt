@@ -47,7 +47,10 @@ fun MeowNavHost() {
             )
         }
         composable<SettingsRoute> {
-            SettingsScreen(onBack = { nav.popBackStack() })
+            SettingsScreen(
+                onBack = { nav.popBackStack() },
+                onOpenSession = { id -> nav.navigate(TranscriptRoute(id)) },
+            )
         }
         composable<TranscriptRoute> {
             TranscriptScreen(

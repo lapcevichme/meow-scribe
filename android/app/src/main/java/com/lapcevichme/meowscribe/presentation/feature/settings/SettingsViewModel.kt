@@ -14,6 +14,7 @@ import com.lapcevichme.meowscribe.domain.repository.SessionRepository
 import com.lapcevichme.meowscribe.domain.repository.SettingsRepository
 import com.lapcevichme.meowscribe.domain.repository.VoiceProfileRepository
 import com.lapcevichme.meowscribe.domain.voice.VoiceProfile
+import com.lapcevichme.meowscribe.presentation.components.displayTitle
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
@@ -24,6 +25,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+
+/** Запись, где встречается сохранённый голос. */
+data class VoiceAppearance(val sessionId: Long, val title: String, val createdAt: Long, val durationMs: Long?)
 
 /** Что сейчас звучит в списке голосов. [text] — реплика из записи или пояснение, почему играть нечего. */
 data class VoicePreview(val profileId: Long, val text: String?, val playing: Boolean, val missing: Boolean = false)
@@ -44,11 +48,32 @@ class SettingsViewModel @Inject constructor(
     private val _preview = MutableStateFlow<VoicePreview?>(null)
     val preview: StateFlow<VoicePreview?> = _preview.asStateFlow()
 
+    /** Голос, у которого раскрыт список записей, и сами записи (null — ещё грузятся). */
+    private val _expanded = MutableStateFlow<Pair<Long, List<VoiceAppearance>?>?>(null)
+    val expanded: StateFlow<Pair<Long, List<VoiceAppearance>?>?> = _expanded.asStateFlow()
+
+    fun toggleExpanded(profileId: Long) {
+        if (_expanded.value?.first == profileId) {
+            _expanded.value = null
+            return
+        }
+        _expanded.value = profileId to null
+        viewModelScope.launch {
+            val list = voices.appearances(profileId)
+                .map { it.first }
+                .distinct()
+                .mapNotNull { id -> sessions.getSession(id)?.takeIf { it.status == SessionStatus.DONE } }
+                .map { VoiceAppearance(it.id, it.displayTitle, it.createdAt, it.durationMs) }
+            if (_expanded.value?.first == profileId) _expanded.value = profileId to list
+        }
+    }
+
     private var player: ExoPlayer? = null
     private var loading: Job? = null
 
     fun deleteVoice(id: Long) {
         if (_preview.value?.profileId == id) stopPreview()
+        if (_expanded.value?.first == id) _expanded.value = null
         viewModelScope.launch { voices.delete(id) }
     }
 

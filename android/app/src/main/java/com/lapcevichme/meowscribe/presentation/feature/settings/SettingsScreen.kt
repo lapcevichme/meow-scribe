@@ -3,6 +3,7 @@
 package com.lapcevichme.meowscribe.presentation.feature.settings
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,6 +35,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
@@ -46,6 +48,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lapcevichme.meowscribe.R
 import com.lapcevichme.meowscribe.domain.model.Profile
 import com.lapcevichme.meowscribe.domain.voice.VoiceProfile
+import com.lapcevichme.meowscribe.presentation.components.formatCreatedAt
+import com.lapcevichme.meowscribe.presentation.components.formatDuration
 import com.lapcevichme.meowscribe.presentation.components.BackTopBar
 import com.lapcevichme.meowscribe.presentation.components.label
 import com.lapcevichme.meowscribe.presentation.components.ChoiceGroup
@@ -54,11 +58,13 @@ import com.lapcevichme.meowscribe.presentation.components.languageLabel
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
+    onOpenSession: (Long) -> Unit,
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val config by viewModel.config.collectAsStateWithLifecycle()
     val voiceProfiles by viewModel.voiceProfiles.collectAsStateWithLifecycle()
     val preview by viewModel.preview.collectAsStateWithLifecycle()
+    val expanded by viewModel.expanded.collectAsStateWithLifecycle()
     DisposableEffect(Unit) { onDispose { viewModel.stopPreview() } }
     val context = LocalContext.current
     val version = remember {
@@ -144,12 +150,16 @@ fun SettingsScreen(
                 if (voiceProfiles.isEmpty()) {
                     Hint("Пока пусто. В расшифровке нажмите на спикера, введите имя и отметьте «Запомнить голос» — в следующих записях приложение подпишет его само.")
                 } else {
-                    Hint("Узнаём этих людей в новых записях. Нажмите на голос, чтобы послушать. Голоса хранятся только на телефоне.")
+                    Hint("Узнаём этих людей в новых записях. Нажмите на голос, чтобы увидеть записи с ним, или ▶, чтобы послушать. Голоса хранятся только на телефоне.")
                     voiceProfiles.forEach { profile ->
                         VoiceRow(
                             profile = profile,
                             preview = preview?.takeIf { it.profileId == profile.id },
+                            isExpanded = expanded?.first == profile.id,
+                            appearances = expanded?.takeIf { it.first == profile.id }?.second,
                             onPlay = { viewModel.togglePreview(profile.id) },
+                            onToggle = { viewModel.toggleExpanded(profile.id) },
+                            onOpenSession = onOpenSession,
                             onDelete = { viewModel.deleteVoice(profile.id) },
                         )
                     }
@@ -202,26 +212,37 @@ private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) 
 }
 
 @Composable
-private fun VoiceRow(profile: VoiceProfile, preview: VoicePreview?, onPlay: () -> Unit, onDelete: () -> Unit) {
-    val active = preview != null && !preview.missing
+private fun VoiceRow(
+    profile: VoiceProfile,
+    preview: VoicePreview?,
+    isExpanded: Boolean,
+    appearances: List<VoiceAppearance>?,
+    onPlay: () -> Unit,
+    onToggle: () -> Unit,
+    onOpenSession: (Long) -> Unit,
+    onDelete: () -> Unit,
+) {
+    val playing = preview != null && !preview.missing
+    val chevron by animateFloatAsState(if (isExpanded) 180f else 0f, label = "chevron")
     Surface(
-        onClick = onPlay,
-        color = if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
+        onClick = onToggle,
+        color = if (playing) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
         shape = RoundedCornerShape(20.dp),
         modifier = Modifier.fillMaxWidth().animateContentSize(MaterialTheme.motionScheme.defaultSpatialSpec()),
     ) {
         Column {
             Row(
-                Modifier.padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                Modifier.padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
-                    when {
-                        preview != null && !preview.missing && !preview.playing -> LoadingIndicator(Modifier.size(24.dp))
-                        else -> Icon(
-                            painterResource(if (active) R.drawable.ic_stop else R.drawable.ic_play),
-                            contentDescription = if (active) "Остановить" else "Послушать голос «${profile.name}»",
+                IconButton(onClick = onPlay) {
+                    if (preview != null && !preview.missing && !preview.playing) {
+                        LoadingIndicator(Modifier.size(24.dp))
+                    } else {
+                        Icon(
+                            painterResource(if (playing) R.drawable.ic_stop else R.drawable.ic_play),
+                            contentDescription = if (playing) "Остановить" else "Послушать голос «${profile.name}»",
                             tint = MaterialTheme.colorScheme.primary,
                         )
                     }
@@ -234,6 +255,12 @@ private fun VoiceRow(profile: VoiceProfile, preview: VoicePreview?, onPlay: () -
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                Icon(
+                    painterResource(R.drawable.ic_chevron_down),
+                    contentDescription = if (isExpanded) "Скрыть записи" else "Показать записи с этим голосом",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.graphicsLayer { rotationZ = chevron },
+                )
                 IconButton(onClick = onDelete) {
                     Icon(painterResource(R.drawable.ic_delete), contentDescription = "Удалить голос «${profile.name}»")
                 }
@@ -247,6 +274,44 @@ private fun VoiceRow(profile: VoiceProfile, preview: VoicePreview?, onPlay: () -
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(start = 52.dp, end = 16.dp, bottom = 12.dp),
                 )
+            }
+            if (isExpanded) {
+                Column(
+                    Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    when {
+                        appearances == null -> LoadingIndicator(Modifier.size(32.dp).align(Alignment.CenterHorizontally))
+                        appearances.isEmpty() -> Text(
+                            "Записи с этим голосом удалены",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 40.dp),
+                        )
+                        else -> appearances.forEach { item ->
+                            Surface(
+                                onClick = { onOpenSession(item.sessionId) },
+                                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                                    Text(
+                                        item.title,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        listOfNotNull(item.durationMs?.let(::formatDuration), formatCreatedAt(item.createdAt)).joinToString(" · "),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
