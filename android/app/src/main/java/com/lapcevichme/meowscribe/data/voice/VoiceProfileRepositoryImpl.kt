@@ -55,6 +55,9 @@ class VoiceProfileRepositoryImpl @Inject constructor(
 
     override suspend fun unlink(sessionId: Long, speakerId: String) = dao.deleteSessionVoice(sessionId, speakerId)
 
+    override suspend fun appearances(profileId: Long): List<Pair<Long, String>> =
+        dao.linksOf(profileId).map { it.sessionId to it.speakerId }
+
     private fun VoiceMatch.toEntity(sessionId: Long) = SessionVoiceEntity(sessionId, speakerId, profileId, similarity)
 
     private fun VoiceProfileEntity.toStored() = StoredVoice(id, name, samples, embedding.toFloats())

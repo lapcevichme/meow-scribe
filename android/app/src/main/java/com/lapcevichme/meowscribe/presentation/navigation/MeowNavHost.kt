@@ -17,8 +17,8 @@ fun MeowNavHost() {
     NavHost(navController = nav, startDestination = HomeRoute) {
         composable<HomeRoute> {
             HomeScreen(
-                onOpenSession = { session ->
-                    if (session.status == SessionStatus.DONE) nav.navigate(TranscriptRoute(session.id))
+                onOpenSession = { session, query ->
+                    if (session.status == SessionStatus.DONE) nav.navigate(TranscriptRoute(session.id, query))
                     else nav.navigate(ProcessingRoute(session.id))
                 },
                 onRecord = { nav.navigate(RecordRoute) },

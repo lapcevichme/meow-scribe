@@ -8,12 +8,17 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -29,6 +34,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.BorderStroke
@@ -66,6 +72,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.ToggleButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -73,12 +81,16 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -96,9 +108,11 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -150,6 +164,25 @@ fun TranscriptScreen(
     var exportOpen by remember { mutableStateOf(false) }
     var reprocessOpen by remember { mutableStateOf(false) }
 
+    // Поиск по расшифровке. Если пришли из поиска на главном — запрос уже подставлен.
+    var searching by rememberSaveable { mutableStateOf(!viewModel.initialQuery.isNullOrBlank()) }
+    var query by rememberSaveable { mutableStateOf(viewModel.initialQuery.orEmpty()) }
+    var hitPos by rememberSaveable { mutableIntStateOf(0) }
+    var fromHome by rememberSaveable { mutableStateOf(!viewModel.initialQuery.isNullOrBlank()) }
+    val loaded = state as? TranscriptUiState.Content
+    val hits = remember(loaded?.utterances, query, searching) {
+        if (!searching || loaded == null) emptyList() else TranscriptSearch.find(loaded.utterances.map { it.text }, query)
+    }
+    LaunchedEffect(query) { hitPos = 0 }
+    LaunchedEffect(loaded != null) {
+        // С главного нашлось по названию, а не по тексту — поле поиска с нулём совпадений не показываем.
+        if (fromHome && loaded != null) {
+            if (hits.isEmpty()) { searching = false; query = "" }
+            fromHome = false
+        }
+    }
+    BackHandler(enabled = searching) { searching = false; query = "" }
+
     LaunchedEffect(Unit) {
         viewModel.events.collect { event ->
             when (event) {
@@ -179,13 +212,27 @@ fun TranscriptScreen(
 
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
         Column(Modifier.fillMaxSize()) {
-            BackTopBar(onBack = onBack) {
-                val content = state as? TranscriptUiState.Content
-                if (content != null) {
-                    IconButton(onClick = { reprocessOpen = true }) {
-                        Icon(painterResource(R.drawable.ic_redo), contentDescription = "Обработать заново")
+            if (searching && loaded != null) {
+                SearchTopBar(
+                    query = query,
+                    onQuery = { query = it },
+                    count = hits.size,
+                    position = hitPos,
+                    onPrev = { if (hits.isNotEmpty()) hitPos = (hitPos - 1 + hits.size) % hits.size },
+                    onNext = { if (hits.isNotEmpty()) hitPos = (hitPos + 1) % hits.size },
+                    onClose = { searching = false; query = "" },
+                )
+            } else {
+                BackTopBar(onBack = onBack) {
+                    if (loaded != null) {
+                        IconButton(onClick = { searching = true }) {
+                            Icon(painterResource(R.drawable.ic_search), contentDescription = "Поиск по расшифровке")
+                        }
+                        IconButton(onClick = { reprocessOpen = true }) {
+                            Icon(painterResource(R.drawable.ic_redo), contentDescription = "Обработать заново")
+                        }
+                        ExportButton(onQuickJson = viewModel::quickJson, onMore = { exportOpen = true })
                     }
-                    ExportButton(onQuickJson = viewModel::quickJson, onMore = { exportOpen = true })
                 }
             }
             when (val s = state) {
@@ -198,6 +245,8 @@ fun TranscriptScreen(
                     content = s,
                     player = player,
                     voiceBusy = voiceBusy,
+                    highlights = remember(hits) { hits.associate { it.index to it.ranges } },
+                    currentHit = hits.getOrNull(hitPos)?.index,
                     onSeek = viewModel::seekTo,
                     onRename = viewModel::renameSpeaker,
                     onEdit = viewModel::editUtterance,
@@ -252,6 +301,68 @@ fun TranscriptScreen(
     }
 }
 
+// ---------------------------------------------------------------- search
+
+@Composable
+private fun SearchTopBar(
+    query: String,
+    onQuery: (String) -> Unit,
+    count: Int,
+    position: Int,
+    onPrev: () -> Unit,
+    onNext: () -> Unit,
+    onClose: () -> Unit,
+) {
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    // Курсор в конец: запрос может прийти уже заполненным с главного экрана.
+    var field by remember { mutableStateOf(TextFieldValue(query, TextRange(query.length))) }
+    Row(
+        Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onClose) {
+            Icon(painterResource(R.drawable.ic_back), contentDescription = "Закрыть поиск")
+        }
+        TextField(
+            value = field,
+            onValueChange = { field = it; onQuery(it.text) },
+            singleLine = true,
+            placeholder = { Text("Поиск по расшифровке") },
+            shape = CircleShape,
+            colors = TextFieldDefaults.colors(
+                focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                focusedIndicatorColor = Color.Transparent,
+                unfocusedIndicatorColor = Color.Transparent,
+            ),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { onNext() }),
+            trailingIcon = if (query.isNotBlank()) {
+                {
+                    Text(
+                        if (count == 0) "0" else "${position + 1}/$count",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(end = 12.dp),
+                    )
+                }
+            } else null,
+            modifier = Modifier.weight(1f).focusRequester(focus),
+        )
+        IconButton(onClick = onPrev, enabled = count > 0) {
+            Icon(
+                painterResource(R.drawable.ic_chevron_down),
+                contentDescription = "Предыдущее совпадение",
+                modifier = Modifier.graphicsLayer { rotationZ = 180f },
+            )
+        }
+        IconButton(onClick = onNext, enabled = count > 0) {
+            Icon(painterResource(R.drawable.ic_chevron_down), contentDescription = "Следующее совпадение")
+        }
+    }
+}
+
 // ---------------------------------------------------------------- body
 
 private data class UtteranceGroup(val speakerId: String, val indices: List<Int>)
@@ -271,6 +382,8 @@ private fun TranscriptBody(
     content: TranscriptUiState.Content,
     player: State<PlayerUiState>,
     voiceBusy: String?,
+    highlights: Map<Int, List<IntRange>>,
+    currentHit: Int?,
     onSeek: (Long, Boolean) -> Unit,
     onRename: (String, String?, Boolean) -> Unit,
     onEdit: (Int, String, String) -> Unit,
@@ -305,6 +418,12 @@ private fun TranscriptBody(
         }
     }
 
+    // Переход к текущему совпадению поиска.
+    LaunchedEffect(currentHit) {
+        val target = currentHit?.let { lazyIndexOf[it] } ?: return@LaunchedEffect
+        listState.animateScrollToItem((target - 1).coerceAtLeast(0))
+    }
+
     fun nameOf(id: String) = content.speakerNames[id] ?: defaultSpeakerName(id)
 
     LazyColumn(
@@ -330,6 +449,8 @@ private fun TranscriptBody(
                         isActive = row.index == activeIndex,
                         isFirst = row.positionInGroup == 0,
                         isLast = row.positionInGroup == row.groupSize - 1,
+                        highlights = highlights[row.index].orEmpty(),
+                        isCurrentHit = row.index == currentHit,
                         positionMs = { player.value.positionMs },
                         onClick = { onSeek(u.startMs, true) },
                         onLongClick = { editing = row.index },
@@ -485,33 +606,75 @@ private fun TranscriptHeader(
         }
         s.summary?.let { summary ->
             val points = s.summaryPoints
-            Surface(color = MaterialTheme.colorScheme.tertiaryContainer, shape = RoundedCornerShape(24.dp)) {
-                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Свёрнутая сводка — первый пункт в две строки, чтобы не отодвигать расшифровку на пол-экрана.
+            var expanded by rememberSaveable { mutableStateOf(false) }
+            val collapsible = points.size > 1 || (points.isEmpty() && summary.length > 160)
+            val chevron by animateFloatAsState(if (expanded) 180f else 0f, MaterialTheme.motionScheme.defaultSpatialSpec(), label = "chevron")
+            Surface(
+                onClick = { if (collapsible) expanded = !expanded },
+                enabled = collapsible,
+                color = MaterialTheme.colorScheme.tertiaryContainer,
+                shape = RoundedCornerShape(24.dp),
+            ) {
+                Column(
+                    Modifier.fillMaxWidth().animateContentSize(MaterialTheme.motionScheme.defaultSpatialSpec()).padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Главное", style = MaterialTheme.typography.titleSmallEmphasized, modifier = Modifier.weight(1f))
                         // Пересчёт по текущему тексту: имеет смысл после правок расшифровки.
                         if (content.summaryState != null) {
                             LoadingIndicator(Modifier.padding(horizontal = 8.dp).size(40.dp)) // высота как у TextButton: строка не прыгает
-                        } else {
+                        } else if (expanded || !collapsible) {
                             TextButton(onClick = onRefreshSummary) { Text("Обновить") }
                         }
+                        if (collapsible) {
+                            Icon(
+                                painterResource(R.drawable.ic_chevron_down),
+                                contentDescription = if (expanded) "Свернуть сводку" else "Развернуть сводку",
+                                modifier = Modifier.padding(start = 4.dp).size(24.dp).graphicsLayer { rotationZ = chevron },
+                                tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                            )
+                        }
                     }
+                    val shown = if (expanded || !collapsible) points else points.take(1)
                     // Сводку без пунктов (старый или нестандартный ответ модели) показываем как есть.
-                    if (points.isEmpty()) Text(summary, style = MaterialTheme.typography.bodyMedium)
-                    points.forEach { point ->
+                    if (points.isEmpty()) {
+                        Text(
+                            summary,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = if (expanded || !collapsible) Int.MAX_VALUE else 3,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    shown.forEach { point ->
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             Box(
                                 Modifier.padding(top = 7.dp).size(6.dp)
                                     .background(MaterialTheme.colorScheme.tertiary, CircleShape),
                             )
-                            Text(point, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                            Text(
+                                point,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = if (expanded || !collapsible) Int.MAX_VALUE else 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
                         }
                     }
-                    Text(
-                        "Сводку написала локальная LLM. Текст расшифровки она не меняет.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f),
-                    )
+                    if (expanded || !collapsible) {
+                        Text(
+                            "Сводку написала локальная LLM. Текст расшифровки она не меняет.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f),
+                        )
+                    } else if (points.size > 1) {
+                        Text(
+                            "Ещё ${points.size - 1} " + pluralPoints(points.size - 1),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f),
+                        )
+                    }
                 }
             }
         }
@@ -598,6 +761,8 @@ private fun UtteranceBubble(
     isActive: Boolean,
     isFirst: Boolean,
     isLast: Boolean,
+    highlights: List<IntRange>,
+    isCurrentHit: Boolean,
     positionMs: () -> Long,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
@@ -610,13 +775,16 @@ private fun UtteranceBubble(
     val container by animateColorAsState(if (isActive) style.accent else style.container, effects, label = "bg")
     val textColor by animateColorAsState(if (isActive) style.onAccent else style.onContainer, effects, label = "fg")
 
+    val shape = RoundedCornerShape(topStart = top, topEnd = top, bottomStart = bottom, bottomEnd = bottom)
+    val hitBorder = if (isCurrentHit) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, shape) else Modifier
     Box(
         Modifier
             .padding(vertical = 1.5.dp)
             .fillMaxWidth()
             .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(RoundedCornerShape(topStart = top, topEnd = top, bottomStart = bottom, bottomEnd = bottom))
+            .clip(shape)
             .background(container)
+            .then(hitBorder)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick, onLongClickLabel = "Изменить реплику")
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
@@ -628,6 +796,18 @@ private fun UtteranceBubble(
             )
             if (isActive) {
                 KaraokeText(utterance, positionMs, textColor)
+            } else if (highlights.isNotEmpty()) {
+                val hl = MaterialTheme.colorScheme.tertiary
+                val onHl = MaterialTheme.colorScheme.onTertiary
+                val text = remember(utterance.text, highlights, hl) {
+                    buildAnnotatedString {
+                        append(utterance.text)
+                        highlights.forEach { r ->
+                            if (r.last < utterance.text.length) addStyle(SpanStyle(background = hl, color = onHl), r.first, r.last + 1)
+                        }
+                    }
+                }
+                Text(text, style = MaterialTheme.typography.bodyLarge, color = textColor)
             } else {
                 Text(utterance.text, style = MaterialTheme.typography.bodyLarge, color = textColor)
             }
@@ -1324,6 +1504,12 @@ private fun CenterText(text: String) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
+}
+
+private fun pluralPoints(n: Int): String = when {
+    n % 10 == 1 && n % 100 != 11 -> "пункт"
+    n % 10 in 2..4 && n % 100 !in 12..14 -> "пункта"
+    else -> "пунктов"
 }
 
 private fun similarityPercent(similarity: Float): Int = (similarity * 100).roundToInt().coerceIn(0, 100)

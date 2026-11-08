@@ -22,4 +22,6 @@ interface VoiceProfileRepository {
     suspend fun replaceMatches(sessionId: Long, matches: List<VoiceMatch>)
     suspend fun link(sessionId: Long, match: VoiceMatch)
     suspend fun unlink(sessionId: Long, speakerId: String)
+    /** sessionId → speakerId: в каких записях встречался голос, сначала новые. */
+    suspend fun appearances(profileId: Long): List<Pair<Long, String>>
 }

@@ -124,7 +124,11 @@ class TranscriptViewModel @Inject constructor(
 
     private val canRememberVoice = embedder.isAvailable
 
-    val sessionId: Long = savedStateHandle.toRoute<TranscriptRoute>().sessionId
+    private val route = savedStateHandle.toRoute<TranscriptRoute>()
+    val sessionId: Long = route.sessionId
+
+    /** Запрос из поиска на главном: экран сразу открывается с поиском по нему. */
+    val initialQuery: String? = route.query
 
     val state: StateFlow<TranscriptUiState> = combine(
         repository.observeSession(sessionId),

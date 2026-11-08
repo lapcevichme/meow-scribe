@@ -9,7 +9,7 @@ data object HomeRoute
 data class ProcessingRoute(val sessionId: Long)
 
 @Serializable
-data class TranscriptRoute(val sessionId: Long)
+data class TranscriptRoute(val sessionId: Long, val query: String? = null)
 
 @Serializable
 data object RecordRoute

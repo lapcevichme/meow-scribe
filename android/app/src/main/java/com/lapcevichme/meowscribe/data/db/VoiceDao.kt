@@ -33,6 +33,10 @@ interface VoiceDao {
     )
     fun observeSessionVoices(sessionId: Long): Flow<List<SessionVoiceRow>>
 
+    /** Где этот голос встречался: сначала самые новые записи. */
+    @Query("SELECT * FROM session_voices WHERE profileId = :profileId ORDER BY sessionId DESC")
+    suspend fun linksOf(profileId: Long): List<SessionVoiceEntity>
+
     @Upsert
     suspend fun upsertSessionVoice(item: SessionVoiceEntity)
 

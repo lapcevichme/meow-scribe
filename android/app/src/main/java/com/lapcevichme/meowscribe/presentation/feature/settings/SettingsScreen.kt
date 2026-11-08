@@ -2,7 +2,9 @@
 
 package com.lapcevichme.meowscribe.presentation.feature.settings
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -15,6 +17,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ButtonGroupDefaults
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -24,6 +27,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.ToggleButton
 import androidx.compose.material3.ToggleButtonDefaults
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -34,6 +38,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -53,6 +58,8 @@ fun SettingsScreen(
 ) {
     val config by viewModel.config.collectAsStateWithLifecycle()
     val voiceProfiles by viewModel.voiceProfiles.collectAsStateWithLifecycle()
+    val preview by viewModel.preview.collectAsStateWithLifecycle()
+    DisposableEffect(Unit) { onDispose { viewModel.stopPreview() } }
     val context = LocalContext.current
     val version = remember {
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull()
@@ -137,8 +144,15 @@ fun SettingsScreen(
                 if (voiceProfiles.isEmpty()) {
                     Hint("Пока пусто. В расшифровке нажмите на спикера, введите имя и отметьте «Запомнить голос» — в следующих записях приложение подпишет его само.")
                 } else {
-                    Hint("Узнаём этих людей в новых записях. Голоса хранятся только на телефоне.")
-                    voiceProfiles.forEach { VoiceRow(it, onDelete = { viewModel.deleteVoice(it.id) }) }
+                    Hint("Узнаём этих людей в новых записях. Нажмите на голос, чтобы послушать. Голоса хранятся только на телефоне.")
+                    voiceProfiles.forEach { profile ->
+                        VoiceRow(
+                            profile = profile,
+                            preview = preview?.takeIf { it.profileId == profile.id },
+                            onPlay = { viewModel.togglePreview(profile.id) },
+                            onDelete = { viewModel.deleteVoice(profile.id) },
+                        )
+                    }
                 }
             }
 
@@ -163,7 +177,7 @@ fun SettingsScreen(
                 }
             }
             Text(
-                "MeowScribe ${version.orEmpty()} · HEX TEAM",
+                "MeowScribe ${version.orEmpty()} · chupapis",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
@@ -188,28 +202,51 @@ private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) 
 }
 
 @Composable
-private fun VoiceRow(profile: VoiceProfile, onDelete: () -> Unit) {
+private fun VoiceRow(profile: VoiceProfile, preview: VoicePreview?, onPlay: () -> Unit, onDelete: () -> Unit) {
+    val active = preview != null && !preview.missing
     Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        onClick = onPlay,
+        color = if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
         shape = RoundedCornerShape(20.dp),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().animateContentSize(MaterialTheme.motionScheme.defaultSpatialSpec()),
     ) {
-        Row(
-            Modifier.padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Icon(painterResource(R.drawable.ic_voice), contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            Column(Modifier.weight(1f)) {
-                Text(profile.name, style = MaterialTheme.typography.titleMedium)
-                Text(
-                    pluralRecordings(profile.samples),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+        Column {
+            Row(
+                Modifier.padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+                    when {
+                        preview != null && !preview.missing && !preview.playing -> LoadingIndicator(Modifier.size(24.dp))
+                        else -> Icon(
+                            painterResource(if (active) R.drawable.ic_stop else R.drawable.ic_play),
+                            contentDescription = if (active) "Остановить" else "Послушать голос «${profile.name}»",
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(profile.name, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        pluralRecordings(profile.samples),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(onClick = onDelete) {
+                    Icon(painterResource(R.drawable.ic_delete), contentDescription = "Удалить голос «${profile.name}»")
+                }
             }
-            IconButton(onClick = onDelete) {
-                Icon(painterResource(R.drawable.ic_delete), contentDescription = "Удалить голос «${profile.name}»")
+            preview?.text?.let { text ->
+                Text(
+                    if (preview.missing) text else "«$text»",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = 52.dp, end = 16.dp, bottom = 12.dp),
+                )
             }
         }
     }

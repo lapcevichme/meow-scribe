@@ -100,7 +100,7 @@ private val AUDIO_MIME_TYPES = arrayOf("audio/*", "application/ogg", "video/mp4"
 
 @Composable
 fun HomeScreen(
-    onOpenSession: (Session) -> Unit,
+    onOpenSession: (Session, String?) -> Unit,
     onRecord: () -> Unit,
     onSettings: () -> Unit,
     viewModel: HomeViewModel = hiltViewModel(),
@@ -136,7 +136,7 @@ fun HomeScreen(
         onSettings = onSettings,
         onQuery = { query = it; viewModel.setQuery(it) },
         onFilter = viewModel::setFilter,
-        onOpen = onOpenSession,
+        onOpen = { onOpenSession(it, query.trim().takeIf { q -> q.isNotEmpty() }) },
         onRetry = viewModel::retry,
         onDelete = viewModel::delete,
     )
