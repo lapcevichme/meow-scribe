@@ -70,7 +70,7 @@ adb install -r app-release.apk
 
 ```bash
 # открыть файл из медиатеки (id — из content://media/external/audio/media/<id>)
-adb shell am start -a android.intent.action.VIEW \
+adb shell am start --grant-read-uri-permission -a android.intent.action.VIEW \
   -d content://media/external/audio/media/<id> -t audio/wav \
   -n com.lapcevichme.meowscribe/.MainActivity
 # забрать экспорт
