@@ -9,6 +9,7 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.navigation.toRoute
+import com.lapcevichme.meowscribe.di.ApplicationScope
 import com.lapcevichme.meowscribe.domain.export.ExportDocument
 import com.lapcevichme.meowscribe.domain.export.ExportFormat
 import com.lapcevichme.meowscribe.domain.export.ExportOptions
@@ -28,9 +29,11 @@ import com.lapcevichme.meowscribe.presentation.navigation.TranscriptRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -116,6 +119,7 @@ class TranscriptViewModel @Inject constructor(
     private val reprocessSession: ReprocessSessionUseCase,
     embedder: SpeakerEmbedder,
     private val queue: ProcessingQueue,
+    @ApplicationScope private val appScope: CoroutineScope,
 ) : ViewModel() {
 
     private val canRememberVoice = embedder.isAvailable
@@ -260,24 +264,21 @@ class TranscriptViewModel @Inject constructor(
                 if (linked != null && !linked.name.equals(clean, ignoreCase = true)) voiceRepository.unlink(sessionId, speakerId)
                 return@launch
             }
+            // Имя — сразу. Голос считается в скоупе приложения: на длинной записи это декодирование всего файла
+            // (десятки секунд), и раньше уход с экрана молча отменял запоминание вместе с именем.
+            repository.renameSpeaker(sessionId, speakerId, clean)
             _voiceBusy.value = speakerId
+            val job = appScope.async { rememberVoice(sessionId, speakerId, clean) }
             val message = try {
-                when (val r = rememberVoice(sessionId, speakerId, clean)) {
+                when (val r = job.await()) {
                     is RememberVoiceUseCase.Result.Created -> "Голос «${r.name}» запомнен"
                     is RememberVoiceUseCase.Result.Updated -> "Голос «${r.name}» уточнён: записей ${r.samples}"
-                    RememberVoiceUseCase.Result.TooLittleSpeech -> {
-                        repository.renameSpeaker(sessionId, speakerId, clean)
-                        "Имя сохранено, но речи слишком мало, чтобы запомнить голос"
-                    }
-                    RememberVoiceUseCase.Result.NoModel -> {
-                        repository.renameSpeaker(sessionId, speakerId, clean)
-                        "Модель голосов не найдена"
-                    }
+                    RememberVoiceUseCase.Result.TooLittleSpeech -> "Имя сохранено, но речи слишком мало, чтобы запомнить голос"
+                    RememberVoiceUseCase.Result.NoModel -> "Модель голосов не найдена"
                 }
             } catch (e: CancellationException) {
-                throw e
+                throw e // ушли с экрана: job в скоупе приложения досчитает сам
             } catch (e: Exception) {
-                repository.renameSpeaker(sessionId, speakerId, clean)
                 "Не удалось запомнить голос: ${e.message}"
             } finally {
                 _voiceBusy.value = null

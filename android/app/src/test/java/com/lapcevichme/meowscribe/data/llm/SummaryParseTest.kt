@@ -20,4 +20,10 @@ class SummaryParseTest {
     fun `returns null without title`() {
         assertNull(LlmSummarizer.parse("Резюме:\n- что-то"))
     }
+
+    @Test
+    fun `copied placeholder is stripped from bullets`() {
+        val s = LlmSummarizer.parse("Название: Эфир\nРезюме:\n- Пункт: Свет — волна.\n- Пункт 2. Опыт Майкельсона.\n- Пунктуальность важна.")!!
+        assertEquals(listOf("Свет — волна.", "Опыт Майкельсона.", "Пунктуальность важна."), s.bullets)
+    }
 }

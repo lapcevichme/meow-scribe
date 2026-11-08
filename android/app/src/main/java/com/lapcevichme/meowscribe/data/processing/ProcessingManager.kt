@@ -272,7 +272,7 @@ class ProcessingManager @Inject constructor(
         onProgress: (Float) -> Unit,
     ) {
         try {
-            val s = summarizer.summarize(utterances, onProgress) ?: return
+            val s = summarizer.summarize(utterances, repository.getSpeakerNames(id), onProgress) ?: return
             val text = buildString {
                 append(s.title)
                 s.bullets.forEach { append("\n• ").append(it) }
