@@ -1,6 +1,6 @@
 # Демонстрация
 
-**Видео:** [`MeowScribe_demo.mp4`](MeowScribe_demo.mp4) (2:31, 720×1600, субтитры вшиты, звук — в сцене воспроизведения).
+**Видео:** [Google Drive](https://drive.google.com/drive/folders/1pJ6H2zaZ7F9Aie6crc3N3rVtT1odSDUV?usp=sharing) · копия в репозитории: [`MeowScribe_demo.mp4`](MeowScribe_demo.mp4) (2:31, 720×1600, субтитры вшиты, звук — в сцене воспроизведения).
 
 Записано на эмуляторе Android Studio x86_64 с 4 ГБ RAM, как у жюри. Интернета приложению не нужно: разрешения `INTERNET` в сборке нет. Длинные ожидания ускорены, это подписано в кадре.
 
