@@ -1,8 +1,22 @@
-# MeowScribe — нейро-стенографист
+<p align="center"><img src="docs/images/icon.png" width="112" alt="Иконка MeowScribe"></p>
+
+<h1 align="center">MeowScribe — нейро-стенографист</h1>
 
 Android-приложение, которое **полностью на устройстве** превращает запись разговора в текст. Оно распознаёт речь, разделяет реплики по говорящим, проставляет временные метки и экспортирует результат в JSON по схеме кейса. Интернет не нужен: в манифесте нет разрешения `INTERNET`, все модели встроены в APK.
 
 Nuclear IT Hack 2026, кейс «Нейро-стенографист», команда **chupapis**: [@lapcevichme](https://github.com/lapcevichme) — приложение и UX, [@oatis123](https://github.com/oatis123) — ML-пайплайн.
+
+<p align="center">
+  <img src="docs/images/home.png" width="200" alt="Список записей">
+  <img src="docs/images/processing.png" width="200" alt="Обработка по этапам">
+  <img src="docs/images/transcript.png" width="200" alt="Расшифровка со сводкой">
+  <img src="docs/images/search.png" width="200" alt="Поиск по расшифровке">
+</p>
+<p align="center">
+  <img src="docs/images/export.png" width="200" alt="Экспорт">
+  <img src="docs/images/settings_voices.png" width="200" alt="Настройки и база голосов">
+  <img src="docs/images/transcript_dark.png" width="200" alt="Тёмная тема">
+</p>
 
 ## Отчётные материалы
 
