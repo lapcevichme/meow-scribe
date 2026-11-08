@@ -28,7 +28,7 @@ Nuclear IT Hack 2026, кейс «Нейро-стенографист», кома
 | 4 | Архитектура и модели | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | 5 | Ограничения | [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) |
 | 6 | Результаты тестов | [`docs/TEST_RESULTS.md`](docs/TEST_RESULTS.md), [`artifacts/test-results/`](artifacts/test-results/), все замеры в [`bench/README.md`](bench/README.md) |
-| 7 | Видеодемонстрация | [Google Drive](https://drive.google.com/drive/folders/1pJ6H2zaZ7F9Aie6crc3N3rVtT1odSDUV?usp=sharing), копия в [`artifacts/demo/`](artifacts/demo/README.md) |
+| 7 | Видеодемонстрация | [Google Drive](https://drive.google.com/drive/folders/1pJ6H2zaZ7F9Aie6crc3N3rVtT1odSDUV?usp=sharing), описание в [`artifacts/demo/`](artifacts/demo/README.md) |
 
 ## Установка
 
