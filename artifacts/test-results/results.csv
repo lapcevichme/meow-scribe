@@ -1,0 +1,11 @@
+dataset,files,lang,wer,wer_punct,der,cpwer,rtf,device,notes
+ru,8,ru,0.034,0.067,0.095,0.120,0.13,laptop 4 threads,Common Voice dialogs 2-3 speakers; der by utterances collar 0.25
+ru_dev,8,ru,0.047,,0.108,0.138,,laptop 4 threads,tuning split
+ru_multi,9,ru,0.046,0.080,0.056,0.065,0.18-0.22,emulator x86_64 4GB,2-4 speakers; rtf from MultiSpeakerTest
+ru_multi_quiet,9,ru,0.069,0.104,0.114,0.217,,laptop 4 threads,-30 dB + ADC noise
+ru_multi_babble,9,ru,0.129,0.167,0.136,0.205,,laptop 4 threads,babble noise SNR 10 dB
+ru_multi_cheap,9,ru,0.091,0.130,0.190,0.331,,laptop 4 threads,clipping 200-4000 Hz MP3 24 kbps
+ru_multi_far,9,ru,0.250,0.273,0.293,0.445,,laptop 4 threads,room RT60 0.5-0.9 s
+en,3,en,0.148,0.177,0.073,,0.12,laptop 4 threads,der by diarization segments (older metric)
+en_ami,9,en,0.346,,0.302,0.400,0.11-0.12,emulator x86_64 4GB,AMI meetings 4-min windows headset mix
+podcast_20min,1,ru,,,,,0.30,emulator x86_64 4GB,no reference; peak RSS 306 MB; LLM summary +28 s

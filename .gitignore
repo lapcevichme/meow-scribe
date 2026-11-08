@@ -5,3 +5,6 @@ bench/data/
 __pycache__/
 *.pyc
 .venv/
+
+# Q&A с организаторами: только локально, там сообщения других участников
+docs/telegram_chat.md
